@@ -1,0 +1,7 @@
+.worktrees/
+.workflow/
+.env
+dist/
+node_modules/
+coverage/
+*.log
