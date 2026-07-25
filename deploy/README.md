@@ -19,6 +19,7 @@
 在 `deploy` 目录创建本地环境文件：
 
 ```bash
+mkdir -p /volume3/work/ace-it-center/postgres
 cp .env.example .env
 chmod 600 .env
 ```
