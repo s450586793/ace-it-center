@@ -2,8 +2,12 @@
 
 ARG GO_VERSION=1.26.0
 ARG NODE_VERSION=24-alpine
+ARG GOPROXY=https://goproxy.cn,direct
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 FROM golang:${GO_VERSION}-alpine AS go-base
+ARG GOPROXY
+ENV GOPROXY=${GOPROXY}
 WORKDIR /src
 RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum ./
@@ -27,9 +31,10 @@ RUN mkdir -p /out \
        go build -trimpath -ldflags="-s -w" -o /out/AceAgent-windows-amd64.exe ./agent/cmd/ace-agent
 
 FROM node:${NODE_VERSION} AS frontend-builder
+ARG NPM_REGISTRY
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN npm ci --registry=${NPM_REGISTRY}
 COPY frontend ./
 RUN npm run build
 

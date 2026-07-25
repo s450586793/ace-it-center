@@ -31,6 +31,8 @@ sudo docker compose up -d
 sudo docker compose ps
 ```
 
+默认使用 `goproxy.cn` 和 `registry.npmmirror.com` 下载构建依赖，可通过 `.env` 中的 `GOPROXY`、`NPM_REGISTRY` 覆盖。
+
 健康检查：
 
 ```bash
