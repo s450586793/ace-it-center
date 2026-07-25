@@ -1,0 +1,10 @@
+.git
+.gitignore
+.worktrees
+.workflow
+frontend/node_modules
+frontend/dist
+coverage
+*.log
+deploy/.env
+deploy/data

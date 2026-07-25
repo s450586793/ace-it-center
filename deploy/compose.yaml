@@ -1,0 +1,68 @@
+name: ace-it-center
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ace_it_center}
+      POSTGRES_USER: ${POSTGRES_USER:-ace}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ${ACE_DATA_DIR:-/volume3/work/ace-it-center}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-ace}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ace_it_center}?sslmode=disable
+      LISTEN_ADDR: :8080
+      ACE_SECURE_COOKIES: ${ACE_SECURE_COOKIES:-false}
+      TZ: ${TZ:-Asia/Shanghai}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - internal
+
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    ports:
+      - ${ACE_HTTP_PORT:-9060}:80
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
