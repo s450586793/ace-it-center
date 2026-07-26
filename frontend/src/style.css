@@ -187,6 +187,28 @@ td small { margin-top: 3px; color: var(--muted); }
 .command-line code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .command-line span { color: var(--accent); font-size: 12px; }
 
+.downloads-section { padding: 28px 0; border-bottom: 1px solid var(--line); }
+.downloads-intro { max-width: 680px; margin-bottom: 24px; }
+.downloads-intro h2 { margin-top: 6px; }
+.downloads-intro > p:last-child { margin-top: 10px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.agent-download-list { border-top: 1px solid var(--line); }
+.agent-download-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 12px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.platform-symbol { display: grid; place-items: center; width: 40px; height: 40px; color: var(--accent); background: var(--surface-alt); border-radius: var(--radius); }
+.agent-platform strong, .agent-platform small { display: block; }
+.agent-platform strong { font-size: 14px; }
+.agent-platform small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.agent-file-name { grid-column: 1 / -1; min-width: 0; color: var(--muted); overflow-wrap: anywhere; font-size: 11px; }
+.download-button { grid-column: 1 / -1; width: 100%; text-decoration: none; }
+.agent-role-list { margin: 24px 0 0; border-top: 1px solid var(--line); }
+.agent-role-list > div { padding: 15px 0; border-bottom: 1px solid var(--line); }
+.agent-role-list dt { font-weight: 600; }
+.agent-role-list dd { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.download-enrollment { display: grid; gap: 16px; align-items: center; margin-top: 24px; padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.download-enrollment > div { display: flex; align-items: center; gap: 12px; }
+.download-enrollment > div > svg { color: var(--accent); }
+.download-enrollment strong, .download-enrollment small { display: block; }
+.download-enrollment small { margin-top: 4px; color: var(--muted); font-size: 12px; }
+
 @media (min-width: 680px) {
   .workspace { padding: 24px 28px 36px; }
   .metric-band { grid-template-columns: repeat(4, 1fr); }
@@ -195,6 +217,13 @@ td small { margin-top: 3px; color: var(--muted); }
   .metric-band article:last-child { border-right: 0; }
   .structure-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .search-field { width: 260px; }
+  .agent-download-row { grid-template-columns: 44px minmax(130px, .75fr) minmax(0, 1.25fr) auto; }
+  .agent-file-name, .download-button { grid-column: auto; }
+  .download-button { width: auto; }
+  .agent-role-list { display: grid; grid-template-columns: 1fr 1fr; }
+  .agent-role-list > div { padding-right: 24px; }
+  .agent-role-list > div + div { padding-left: 24px; border-left: 1px solid var(--line); }
+  .download-enrollment { grid-template-columns: 1fr auto; }
 }
 
 @media (min-width: 1040px) {
