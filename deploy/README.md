@@ -11,7 +11,7 @@
 - DSM 7.2；
 - Container Manager；
 - Docker Compose v2；
-- 数据目录 `/volume3/work/ace-it-center`；
+- 数据目录 `/volume4/docker/docker/ace-it-center`；
 - 空闲 TCP 端口 `9060`。
 
 ## 部署
@@ -19,7 +19,7 @@
 在 `deploy` 目录创建本地环境文件：
 
 ```bash
-mkdir -p /volume3/work/ace-it-center/postgres
+mkdir -p /volume4/docker/docker/ace-it-center/postgres
 cp .env.example .env
 chmod 600 .env
 ```
@@ -64,7 +64,7 @@ sudo docker compose up -d --force-recreate backend
 
 ## 数据与升级
 
-PostgreSQL 数据保存在 `/volume3/work/ace-it-center/postgres`。升级前先备份该目录，然后在项目目录重新执行：
+PostgreSQL 数据保存在 `/volume4/docker/docker/ace-it-center/postgres`。升级前先备份该目录，然后在项目目录重新执行：
 
 ```bash
 sudo docker compose build --pull
