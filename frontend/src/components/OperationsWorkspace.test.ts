@@ -1,7 +1,13 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { apiRequest } from '../api'
+import type { NodeGroup } from '../types'
 import OperationsWorkspace from './OperationsWorkspace.vue'
+
+vi.mock('../api', () => ({
+  apiRequest: vi.fn(),
+}))
 
 const ElDialogStub = defineComponent({
   name: 'ElDialog',
@@ -19,14 +25,14 @@ const ElDialogStub = defineComponent({
   `,
 })
 
-function mountWorkspace() {
+function mountWorkspace(groups: NodeGroup[] = []) {
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
   return mount(OperationsWorkspace, {
     props: {
       owner: { id: 'owner-1', username: 'jarvis' },
       organizations: [],
       sites: [],
-      groups: [],
+      groups,
       nodes: [],
     },
     global: {
@@ -38,7 +44,10 @@ function mountWorkspace() {
 }
 
 describe('OperationsWorkspace', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.clearAllMocks()
+    vi.unstubAllGlobals()
+  })
 
   it('switches between overview and client downloads with accurate active navigation', async () => {
     const wrapper = mountWorkspace()
@@ -66,6 +75,39 @@ describe('OperationsWorkspace', () => {
 
     await wrapper.get('a[href="#downloads"]').trigger('click')
     expect(wrapper.get('aside').classes()).not.toContain('open')
+    wrapper.unmount()
+  })
+
+  it('opens the existing enrollment dialog from downloads and shows commands for downloaded files', async () => {
+    vi.mocked(apiRequest).mockResolvedValue({ token: 'enrollment-token' })
+    const wrapper = mountWorkspace([
+      { id: 'group-1', site_id: 'site-1', name: '生产环境', created_at: '2026-07-27T00:00:00Z' },
+    ])
+
+    await wrapper.get('a[href="#downloads"]').trigger('click')
+    const enrollButton = wrapper.get('button[data-action="enroll"]')
+    expect(enrollButton.attributes('disabled')).toBeUndefined()
+    await enrollButton.trigger('click')
+
+    expect(wrapper.get('[data-testid="el-dialog-stub"]').attributes('data-open')).toBe('true')
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    const commands = wrapper.findAll('.command-line code').map(command => command.text())
+    expect(commands).toEqual([
+      `.\\AceAgent-windows-amd64.exe -server ${window.location.origin} -enrollment enrollment-token`,
+      `chmod +x ./ace-agent-linux-amd64 && ./ace-agent-linux-amd64 -server ${window.location.origin} -enrollment enrollment-token`,
+    ])
+    wrapper.unmount()
+  })
+
+  it('disables enrollment from downloads when no groups exist', async () => {
+    const wrapper = mountWorkspace()
+
+    await wrapper.get('a[href="#downloads"]').trigger('click')
+
+    expect(wrapper.get('button[data-action="enroll"]').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 })

@@ -33,7 +33,12 @@ const agents = [
         <span class="platform-symbol" aria-hidden="true"><component :is="agent.icon" /></span>
         <div class="agent-platform"><strong>{{ agent.platform }}</strong><small>AMD64 / x86-64</small></div>
         <code class="agent-file-name">{{ agent.fileName }}</code>
-        <a class="primary-button download-button" :href="agent.href" :download="agent.fileName">
+        <a
+          class="primary-button download-button"
+          :href="agent.href"
+          :download="agent.fileName"
+          :aria-label="`下载 ${agent.platform} Ace Agent：${agent.fileName}`"
+        >
           <Download aria-hidden="true" />下载
         </a>
       </article>

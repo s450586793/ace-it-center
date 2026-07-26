@@ -43,8 +43,8 @@ const dialogOpen = computed({
 const onlineCount = computed(() => props.nodes.filter(node => isNodeOnline(node.last_seen_at, now.value)).length)
 const offlineCount = computed(() => props.nodes.length - onlineCount.value)
 const currentOrigin = computed(() => window.location.origin)
-const windowsCommand = computed(() => `.\\ace-agent.exe -server ${currentOrigin.value} -enrollment ${enrollmentToken.value}`)
-const linuxCommand = computed(() => `sudo ./ace-agent -server ${currentOrigin.value} -enrollment ${enrollmentToken.value}`)
+const windowsCommand = computed(() => `.\\AceAgent-windows-amd64.exe -server ${currentOrigin.value} -enrollment ${enrollmentToken.value}`)
+const linuxCommand = computed(() => `chmod +x ./ace-agent-linux-amd64 && ./ace-agent-linux-amd64 -server ${currentOrigin.value} -enrollment ${enrollmentToken.value}`)
 
 function showView(view: WorkspaceView) {
   activeView.value = view
