@@ -1,6 +1,23 @@
 import { mount } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import OperationsWorkspace from './OperationsWorkspace.vue'
+
+const ElDialogStub = defineComponent({
+  name: 'ElDialog',
+  props: {
+    modelValue: { type: Boolean, default: false },
+    title: { type: String, default: '' },
+    width: { type: String, default: '' },
+    alignCenter: { type: Boolean, default: false },
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <div data-testid="el-dialog-stub" :data-open="modelValue">
+      <slot />
+    </div>
+  `,
+})
 
 function mountWorkspace() {
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })))
@@ -11,6 +28,11 @@ function mountWorkspace() {
       sites: [],
       groups: [],
       nodes: [],
+    },
+    global: {
+      stubs: {
+        ElDialog: ElDialogStub,
+      },
     },
   })
 }
