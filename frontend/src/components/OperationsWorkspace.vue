@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
-  Bell, Connection, DataBoard, Expand, Fold, Key, Location, Moon,
-  OfficeBuilding, Plus, Refresh, Setting, Sunny, SwitchButton,
+  Bell, Connection, DataBoard, Download, Expand, Fold, Key, Location, Moon,
+  OfficeBuilding, Plus, Refresh, Sunny, SwitchButton,
 } from '@element-plus/icons-vue'
 import { ElDialog } from 'element-plus'
 import { apiRequest } from '../api'
 import { isNodeOnline } from '../lib/status'
 import type { Node, NodeGroup, Organization, Owner, Site } from '../types'
+import AgentDownloads from './AgentDownloads.vue'
 import NodeTable from './NodeTable.vue'
+
+type WorkspaceView = 'overview' | 'downloads'
 
 const props = defineProps<{
   owner: Owner
@@ -20,6 +23,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ refresh: []; logout: [] }>()
 const now = ref(new Date())
+const activeView = ref<WorkspaceView>('overview')
 const mobileNav = ref(false)
 const darkMode = ref(false)
 const dialog = ref<'organization' | 'site' | 'group' | 'enrollment' | null>(null)
@@ -41,6 +45,17 @@ const offlineCount = computed(() => props.nodes.length - onlineCount.value)
 const currentOrigin = computed(() => window.location.origin)
 const windowsCommand = computed(() => `.\\ace-agent.exe -server ${currentOrigin.value} -enrollment ${enrollmentToken.value}`)
 const linuxCommand = computed(() => `sudo ./ace-agent -server ${currentOrigin.value} -enrollment ${enrollmentToken.value}`)
+
+function showView(view: WorkspaceView) {
+  activeView.value = view
+  mobileNav.value = false
+}
+
+async function showStructure() {
+  showView('overview')
+  await nextTick()
+  document.getElementById('structure')?.scrollIntoView?.()
+}
 
 function openDialog(type: typeof dialog.value) {
   dialog.value = type
@@ -104,8 +119,13 @@ onBeforeUnmount(() => window.clearInterval(clock))
         <div><strong>Ace IT Center</strong><small>CONTROL PLANE</small></div>
       </div>
       <nav aria-label="主导航">
-        <a class="active" href="#nodes"><DataBoard aria-hidden="true" /><span>设备总览</span><b>{{ nodes.length }}</b></a>
-        <a href="#structure"><OfficeBuilding aria-hidden="true" /><span>组织结构</span></a>
+        <a href="#nodes" :class="{ active: activeView === 'overview' }" :aria-current="activeView === 'overview' ? 'page' : undefined" @click.prevent="showView('overview')">
+          <DataBoard aria-hidden="true" /><span>设备总览</span><b>{{ nodes.length }}</b>
+        </a>
+        <a href="#structure" @click.prevent="showStructure"><OfficeBuilding aria-hidden="true" /><span>组织结构</span></a>
+        <a href="#downloads" :class="{ active: activeView === 'downloads' }" :aria-current="activeView === 'downloads' ? 'page' : undefined" @click.prevent="showView('downloads')">
+          <Download aria-hidden="true" /><span>客户端下载</span>
+        </a>
         <a href="#enrollment" @click.prevent="openDialog('enrollment')"><Key aria-hidden="true" /><span>设备接入</span></a>
       </nav>
       <div class="sidebar-spacer"></div>
@@ -128,54 +148,57 @@ onBeforeUnmount(() => window.clearInterval(clock))
           <Fold v-if="mobileNav" /><Expand v-else />
         </button>
         <div>
-          <p class="section-index">INFRASTRUCTURE / OVERVIEW</p>
-          <h1>设备运行总览</h1>
+          <p class="section-index">{{ activeView === 'overview' ? 'INFRASTRUCTURE / OVERVIEW' : 'INFRASTRUCTURE / AGENTS' }}</p>
+          <h1>{{ activeView === 'overview' ? '设备运行总览' : '客户端下载' }}</h1>
         </div>
         <div class="topbar-actions">
-          <button class="icon-button" type="button" title="刷新数据" @click="emit('refresh')"><Refresh /></button>
+          <button v-if="activeView === 'overview'" class="icon-button" type="button" title="刷新数据" @click="emit('refresh')"><Refresh /></button>
           <button class="icon-button" type="button" :title="darkMode ? '切换浅色模式' : '切换深色模式'" @click="toggleTheme">
             <Sunny v-if="darkMode" /><Moon v-else />
           </button>
           <button class="icon-button desktop-only" type="button" title="通知"><Bell /></button>
-          <button class="primary-button compact" type="button" :disabled="groups.length === 0" @click="openDialog('enrollment')">
+          <button v-if="activeView === 'overview'" class="primary-button compact" type="button" :disabled="groups.length === 0" @click="openDialog('enrollment')">
             <Plus />添加设备
           </button>
         </div>
       </header>
 
-      <section class="metric-band" aria-label="设备状态汇总">
-        <article><span>节点总数</span><strong>{{ nodes.length }}</strong><small><Connection />已纳管设备</small></article>
-        <article><span>在线</span><strong class="success">{{ onlineCount }}</strong><small><i class="metric-dot online"></i>90 秒内有心跳</small></article>
-        <article><span>离线</span><strong :class="{ danger: offlineCount > 0 }">{{ offlineCount }}</strong><small><i class="metric-dot offline"></i>需要检查</small></article>
-        <article><span>地点</span><strong>{{ sites.length }}</strong><small><Location />{{ organizations.length }} 个组织</small></article>
-      </section>
+      <template v-if="activeView === 'overview'">
+        <section class="metric-band" aria-label="设备状态汇总">
+          <article><span>节点总数</span><strong>{{ nodes.length }}</strong><small><Connection />已纳管设备</small></article>
+          <article><span>在线</span><strong class="success">{{ onlineCount }}</strong><small><i class="metric-dot online"></i>90 秒内有心跳</small></article>
+          <article><span>离线</span><strong :class="{ danger: offlineCount > 0 }">{{ offlineCount }}</strong><small><i class="metric-dot offline"></i>需要检查</small></article>
+          <article><span>地点</span><strong>{{ sites.length }}</strong><small><Location />{{ organizations.length }} 个组织</small></article>
+        </section>
 
-      <section id="structure" class="structure-section" aria-labelledby="structure-title">
-        <div class="section-toolbar">
-          <div><p class="section-index">02 / STRUCTURE</p><h2 id="structure-title">组织结构</h2></div>
-          <div class="inline-actions">
-            <button class="text-button" type="button" @click="openDialog('organization')"><Plus />组织</button>
-            <button class="text-button" type="button" :disabled="organizations.length === 0" @click="openDialog('site')"><Plus />地点</button>
-            <button class="text-button" type="button" :disabled="sites.length === 0" @click="openDialog('group')"><Plus />分组</button>
-          </div>
-        </div>
-        <div v-if="organizations.length" class="structure-grid">
-          <article v-for="organization in organizations" :key="organization.id" class="organization-block">
-            <header><OfficeBuilding /><strong>{{ organization.name }}</strong></header>
-            <div v-for="site in sites.filter(item => item.organization_id === organization.id)" :key="site.id" class="site-row">
-              <span><Location />{{ site.name }}</span>
-              <small>{{ groups.filter(group => group.site_id === site.id).length }} 个分组</small>
+        <section id="structure" class="structure-section" aria-labelledby="structure-title">
+          <div class="section-toolbar">
+            <div><p class="section-index">02 / STRUCTURE</p><h2 id="structure-title">组织结构</h2></div>
+            <div class="inline-actions">
+              <button class="text-button" type="button" @click="openDialog('organization')"><Plus />组织</button>
+              <button class="text-button" type="button" :disabled="organizations.length === 0" @click="openDialog('site')"><Plus />地点</button>
+              <button class="text-button" type="button" :disabled="sites.length === 0" @click="openDialog('group')"><Plus />分组</button>
             </div>
-            <p v-if="!sites.some(item => item.organization_id === organization.id)" class="muted">尚未添加地点</p>
-          </article>
-        </div>
-        <div v-else class="structure-empty">
-          <OfficeBuilding aria-hidden="true" /><strong>创建第一个组织</strong>
-          <button class="text-button" type="button" @click="openDialog('organization')"><Plus />新建组织</button>
-        </div>
-      </section>
+          </div>
+          <div v-if="organizations.length" class="structure-grid">
+            <article v-for="organization in organizations" :key="organization.id" class="organization-block">
+              <header><OfficeBuilding /><strong>{{ organization.name }}</strong></header>
+              <div v-for="site in sites.filter(item => item.organization_id === organization.id)" :key="site.id" class="site-row">
+                <span><Location />{{ site.name }}</span>
+                <small>{{ groups.filter(group => group.site_id === site.id).length }} 个分组</small>
+              </div>
+              <p v-if="!sites.some(item => item.organization_id === organization.id)" class="muted">尚未添加地点</p>
+            </article>
+          </div>
+          <div v-else class="structure-empty">
+            <OfficeBuilding aria-hidden="true" /><strong>创建第一个组织</strong>
+            <button class="text-button" type="button" @click="openDialog('organization')"><Plus />新建组织</button>
+          </div>
+        </section>
 
-      <NodeTable id="nodes" :nodes="nodes" :now="now" />
+        <NodeTable id="nodes" :nodes="nodes" :now="now" />
+      </template>
+      <AgentDownloads v-else :can-enroll="groups.length > 0" @enroll="openDialog('enrollment')" />
 
       <footer class="workspace-footer">
         <span>Ace IT Center / Phase 1</span><span>Last refresh {{ now.toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
