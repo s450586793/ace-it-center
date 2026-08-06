@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -350,6 +348,9 @@ func (manager *Manager) Recover(ctx context.Context) error {
 	case StageSwitchingBackend, StageCheckingBackend, StageSwitchingWeb, StageCheckingWeb, StageStabilizing, StageRollingBack:
 		return manager.rollback(ctx, &task, "updater_restarted")
 	case StageCleaning:
+		if !hasRollbackImages(task.Original) {
+			return manager.markManualIntervention(&task, "state_invalid")
+		}
 		if !imagePairMatches(actual, task.Target) {
 			return manager.rollback(ctx, &task, "updater_restarted")
 		}
@@ -501,17 +502,11 @@ func (manager *Manager) markManualIntervention(task *Task, code string) error {
 	return manager.saveTask(*task)
 }
 
-var sensitiveFailureDetail = regexp.MustCompile(`(?i)(token|authorization|password|secret|runner output|stdout|stderr|(?:^|\s)[A-Z_][A-Z0-9_]*\s*[:=])`)
-
 func (manager *Manager) logFailure(task Task, code string, err error) {
 	if manager.logger == nil || err == nil {
 		return
 	}
-	detail := strings.TrimSpace(err.Error())
-	if sensitiveFailureDetail.MatchString(detail) {
-		detail = "redacted external failure"
-	}
-	manager.logger.Error("system update operation failed", "task_id", task.ID, "stage", task.Stage, "error_code", code, "detail", detail)
+	manager.logger.Error("system update operation failed", "task_id", task.ID, "stage", task.Stage, "error_code", code, "detail", "external operation failed")
 }
 
 func (manager *Manager) saveTask(task Task) error {

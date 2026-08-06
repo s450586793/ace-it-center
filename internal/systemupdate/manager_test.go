@@ -419,31 +419,50 @@ func TestManagerRollbackFailureRequiresManualIntervention(t *testing.T) {
 	}
 }
 
-func TestManagerFailureLogsRedactEnvironmentDetails(t *testing.T) {
+func TestManagerFailureLogsOnlySafeClassification(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
-	store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
-	check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
-	if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name   string
+		detail string
+		leaks  []string
+	}{
+		{name: "docker daemon detail", detail: "docker daemon error: image internal sha256:private-image", leaks: []string{"docker daemon", "private-image"}},
+		{name: "stack detail", detail: "goroutine 42 [running]:\ninternal/platform.(*runner).Run(...)", leaks: []string{"goroutine 42", "internal/platform"}},
+		{name: "unknown environment detail", detail: "opaque_config: private-value", leaks: []string{"opaque_config", "private-value"}},
 	}
-	var logs bytes.Buffer
-	manager, err := NewManager(ManagerOptions{
-		Store: store, Checker: newTestChecker(managerPair("v0.4.0"), managerPair("v0.4.1"), func() time.Time { return now }),
-		Platform: &failurePlatform{images: managerPair("v0.4.0"), failures: map[string]error{
-			"backup#1": errors.New("command failed API_KEY: private-value"),
-		}},
-		Now: func() time.Time { return now }, NewID: func() string { return "123e4567-e89b-12d3-a456-426614174000" },
-		Launch: func(job func()) { job() }, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+			check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+			if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			manager, err := NewManager(ManagerOptions{
+				Store: store, Checker: newTestChecker(managerPair("v0.4.0"), managerPair("v0.4.1"), func() time.Time { return now }),
+				Platform: &failurePlatform{images: managerPair("v0.4.0"), failures: map[string]error{
+					"backup#1": errors.New(test.detail),
+				}},
+				Now: func() time.Time { return now }, NewID: func() string { return "123e4567-e89b-12d3-a456-426614174000" },
+				Launch: func(job func()) { job() }, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	if _, err := manager.Start(context.Background(), "v0.4.1"); err != nil {
-		t.Fatal(err)
-	}
-	if output := logs.String(); strings.Contains(output, "API_KEY") || strings.Contains(output, "private-value") {
-		t.Fatalf("logger exposed environment detail: %q", output)
+			if _, err := manager.Start(context.Background(), "v0.4.1"); err != nil {
+				t.Fatal(err)
+			}
+			output := logs.String()
+			if !strings.Contains(output, "stage=backing_up") || !strings.Contains(output, "error_code=backup_failed") {
+				t.Fatalf("logger omitted safe classification: %q", output)
+			}
+			for _, leak := range test.leaks {
+				if strings.Contains(output, leak) {
+					t.Fatalf("logger exposed %q: %q", leak, output)
+				}
+			}
+		})
 	}
 }
 
@@ -454,6 +473,7 @@ func TestManagerRecoverUsesPersistedStageAndActualServices(t *testing.T) {
 		stage          Stage
 		images         ImagePair
 		withoutAlias   bool
+		withoutDigest  bool
 		failures       map[string]error
 		wantStage      Stage
 		wantCode       string
@@ -469,6 +489,8 @@ func TestManagerRecoverUsesPersistedStageAndActualServices(t *testing.T) {
 		{name: "stabilizing", stage: StageStabilizing, images: managerPair("v0.4.1"), wantStage: StageFailed, wantCode: "updater_restarted", wantRolledBack: true, wantCalls: []string{"inspect:backend", "inspect:web", "rollback:backend", "health:backend", "rollback:web", "health:web"}},
 		{name: "cleaning targets healthy", stage: StageCleaning, images: managerPair("v0.4.1"), wantStage: StageSucceeded, wantCalls: []string{"inspect:backend", "inspect:web", "health:backend", "health:web", "clean:backend", "clean:web"}},
 		{name: "missing aliases", stage: StageSwitchingBackend, images: managerPair("v0.4.1"), withoutAlias: true, wantStage: StageManualIntervention, wantCode: "state_invalid", wantCalls: []string{"inspect:backend", "inspect:web"}},
+		{name: "cleaning missing aliases", stage: StageCleaning, images: managerPair("v0.4.1"), withoutAlias: true, wantStage: StageManualIntervention, wantCode: "state_invalid", wantCalls: []string{"inspect:backend", "inspect:web"}},
+		{name: "cleaning missing digest", stage: StageCleaning, images: managerPair("v0.4.1"), withoutDigest: true, wantStage: StageManualIntervention, wantCode: "state_invalid", wantCalls: []string{"inspect:backend", "inspect:web"}},
 		{name: "rollback health failure", stage: StageCheckingBackend, images: managerPair("v0.4.1"), failures: map[string]error{"health:backend#1": errors.New("recovery health failed")}, wantStage: StageManualIntervention, wantCode: "rollback_failed", wantCalls: []string{"inspect:backend", "inspect:web", "rollback:backend", "health:backend", "rollback:web", "health:web"}},
 	}
 	for _, test := range tests {
@@ -477,6 +499,9 @@ func TestManagerRecoverUsesPersistedStageAndActualServices(t *testing.T) {
 			task := managerRecoveryTask(now, test.stage)
 			if test.withoutAlias {
 				task.Original.Backend.RollbackAlias = ""
+			}
+			if test.withoutDigest {
+				task.Original.Backend.Digest = ""
 			}
 			check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
 			if err := store.Save(PersistentState{LastCheck: &check, Task: &task}); err != nil {
