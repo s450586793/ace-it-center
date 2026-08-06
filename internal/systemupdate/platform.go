@@ -61,6 +61,7 @@ type Platform interface {
 type CLIPlatform struct {
 	config         PlatformConfig
 	runner         CommandRunner
+	healthClient   *http.Client
 	sleep          func(context.Context, time.Duration) error
 	healthInterval time.Duration
 	now            func() time.Time
@@ -87,9 +88,14 @@ func NewCLIPlatform(config PlatformConfig, runner CommandRunner) (*CLIPlatform, 
 	if config.HealthTimeout <= 0 || config.HTTPClient == nil {
 		return nil, errors.New("platform health configuration is required")
 	}
+	healthClient := *config.HTTPClient
+	healthClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &CLIPlatform{
 		config:         config,
 		runner:         runner,
+		healthClient:   &healthClient,
 		sleep:          sleepContext,
 		healthInterval: 2 * time.Second,
 		now:            time.Now,
@@ -318,12 +324,19 @@ func (platform *CLIPlatform) RemoveOldImage(ctx context.Context, service Service
 		return cleanupPendingError()
 	}
 
-	aliases := map[string]struct{}{old.RollbackAlias: {}}
+	aliases := make(map[string]struct{}, len(inspected.RepoTags))
+	foundRollbackAlias := false
 	for _, tag := range inspected.RepoTags {
 		if tag != old.RollbackAlias && !referenceUsesRepository(tag, repository) {
 			return cleanupPendingError()
 		}
+		if tag == old.RollbackAlias {
+			foundRollbackAlias = true
+		}
 		aliases[tag] = struct{}{}
+	}
+	if !foundRollbackAlias {
+		return cleanupPendingError()
 	}
 	wantDigestReference := repository + "@" + old.Digest
 	foundRecordedDigest := false
@@ -388,7 +401,7 @@ func (platform *CLIPlatform) httpHealthy(ctx context.Context, healthURL string) 
 	if err != nil {
 		return false
 	}
-	response, err := platform.config.HTTPClient.Do(request)
+	response, err := platform.healthClient.Do(request)
 	if err != nil || response == nil || response.Body == nil {
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()

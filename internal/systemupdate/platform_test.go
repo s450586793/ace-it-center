@@ -491,6 +491,49 @@ func TestPlatformWaitHealthyRetriesNon200UntilTimeout(t *testing.T) {
 	}
 }
 
+func TestPlatformWaitHealthyRejectsRedirectWithoutRequestingTarget(t *testing.T) {
+	for _, statusCode := range []int{http.StatusFound, http.StatusTemporaryRedirect} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			runner := &fakeCommandRunner{results: serviceInspectResults("healthy")}
+			redirectBody := &trackingBody{reader: strings.NewReader("redirect")}
+			redirectTargetRequests := 0
+			callerRedirectChecks := 0
+			callerClient := &http.Client{
+				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					if request.URL.String() == "http://redirect.invalid/health" {
+						redirectTargetRequests++
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+					}
+					return &http.Response{
+						StatusCode: statusCode,
+						Body:       redirectBody,
+						Header:     http.Header{"Location": []string{"http://redirect.invalid/health"}},
+					}, nil
+				}),
+				CheckRedirect: func(*http.Request, []*http.Request) error {
+					callerRedirectChecks++
+					return nil
+				},
+			}
+			config := testPlatformConfig(t)
+			config.HTTPClient = callerClient
+			platform, err := NewCLIPlatform(config, runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			platform.sleep = func(context.Context, time.Duration) error { return context.DeadlineExceeded }
+
+			err = platform.WaitHealthy(context.Background(), ServiceBackend)
+			if err == nil || redirectTargetRequests != 0 || callerRedirectChecks != 0 || !redirectBody.closed {
+				t.Fatalf("WaitHealthy() error = %v, target requests = %d, caller redirect checks = %d, body closed = %v", err, redirectTargetRequests, callerRedirectChecks, redirectBody.closed)
+			}
+			if err := callerClient.CheckRedirect(nil, nil); err != nil || callerRedirectChecks != 1 {
+				t.Fatalf("caller HTTP client was modified: error = %v, checks = %d", err, callerRedirectChecks)
+			}
+		})
+	}
+}
+
 func TestPlatformWaitHealthyRejectsUnmanagedServiceWithoutIO(t *testing.T) {
 	runner := &fakeCommandRunner{}
 	err := newTestPlatform(t, runner).WaitHealthy(context.Background(), ServiceName("postgres"))
@@ -533,6 +576,35 @@ func TestPlatformRemoveOldImageRejectsUnknownReferencesBeforeDeletion(t *testing
 			}
 			if len(runner.calls) != 2 {
 				t.Fatalf("unknown reference triggered deletion: %#v", runner.calls)
+			}
+		})
+	}
+}
+
+func TestPlatformRemoveOldImageRequiresRecordedAliasOnOldImageBeforeDeletion(t *testing.T) {
+	old := cleanupImage("123e4567-e89b-12d3-a456-426614174000")
+	for _, test := range []struct {
+		name     string
+		repoTags string
+	}{
+		{name: "alias missing", repoTags: `[]`},
+		{name: "alias reassigned to another image", repoTags: `["` + testBackendRepo + `:stable"]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inspectJSON := `[{"Id":"` + testOldID + `","RepoTags":` + test.repoTags + `,"RepoDigests":["` + testBackendRepo + `@` + testOldDigest + `"],"Config":{"Labels":{"org.opencontainers.image.version":"v0.4.0"}}}]`
+			runner := &fakeCommandRunner{results: []commandResult{{}, {output: []byte(inspectJSON)}}}
+
+			err := newTestPlatform(t, runner).RemoveOldImage(context.Background(), ServiceBackend, old)
+			if err == nil || !strings.Contains(err.Error(), "cleanup pending") {
+				t.Fatalf("RemoveOldImage() error = %v", err)
+			}
+			if len(runner.calls) != 2 {
+				t.Fatalf("recorded alias mismatch triggered deletion: %#v", runner.calls)
+			}
+			for _, call := range runner.calls {
+				if reflect.DeepEqual(call.args[:min(2, len(call.args))], []string{"image", "rm"}) {
+					t.Fatalf("recorded alias mismatch triggered delete call: %#v", call)
+				}
 			}
 		})
 	}
