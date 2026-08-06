@@ -3,6 +3,9 @@ package systemupdate
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +31,7 @@ type ManagerOptions struct {
 	CheckTTL       time.Duration
 	StableWindow   time.Duration
 	StableInterval time.Duration
+	Logger         *slog.Logger
 }
 
 // Manager serializes update checks and starts one persisted upgrade at a time.
@@ -42,6 +46,7 @@ type Manager struct {
 	checkTTL       time.Duration
 	stableWindow   time.Duration
 	stableInterval time.Duration
+	logger         *slog.Logger
 	mu             sync.Mutex
 }
 
@@ -88,6 +93,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		checkTTL:       options.CheckTTL,
 		stableWindow:   options.StableWindow,
 		stableInterval: options.StableInterval,
+		logger:         options.Logger,
 	}, nil
 }
 
@@ -136,7 +142,7 @@ func (manager *Manager) Start(ctx context.Context, targetVersion string) (TaskVi
 		manager.mu.Unlock()
 		return TaskView{}, err
 	}
-	if state.Task != nil && !state.Task.Stage.Terminal() {
+	if state.Task != nil && (!state.Task.Stage.Terminal() || state.Task.Stage == StageManualIntervention) {
 		manager.mu.Unlock()
 		return TaskView{}, errors.New("system update task is already active")
 	}
@@ -189,78 +195,90 @@ func (manager *Manager) Start(ctx context.Context, targetVersion string) (TaskVi
 func (manager *Manager) run(task Task) {
 	ctx := manager.rootContext
 	var image Image
-	if manager.perform(&task, StageChecking, func() error {
+	if err := manager.perform(&task, StageChecking, func() error {
 		var err error
 		image, err = manager.platform.InspectService(ctx, ServiceBackend)
 		if err == nil {
 			task.Original.Backend = image
 		}
 		return err
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "state_invalid", false, err)
 		return
 	}
-	if manager.perform(&task, StageChecking, func() error {
+	if err := manager.perform(&task, StageChecking, func() error {
 		var err error
 		image, err = manager.platform.InspectService(ctx, ServiceWeb)
 		if err == nil {
 			task.Original.Web = image
 		}
 		return err
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "state_invalid", false, err)
 		return
 	}
-	if manager.perform(&task, StageBackingUp, func() error {
+	if err := manager.perform(&task, StageBackingUp, func() error {
 		var err error
 		task.Original.Backend, err = manager.platform.CreateRollbackAlias(ctx, ServiceBackend, task.Original.Backend, task.ID)
 		return err
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "backup_failed", false, err)
 		return
 	}
-	if manager.perform(&task, StageBackingUp, func() error {
+	if err := manager.perform(&task, StageBackingUp, func() error {
 		var err error
 		task.Original.Web, err = manager.platform.CreateRollbackAlias(ctx, ServiceWeb, task.Original.Web, task.ID)
 		return err
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "backup_failed", false, err)
 		return
 	}
-	if manager.perform(&task, StageBackingUp, func() error {
+	if err := manager.perform(&task, StageBackingUp, func() error {
 		var err error
 		task.BackupPath, err = manager.platform.BackupDatabase(ctx, task.ID)
 		return err
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "backup_failed", false, err)
 		return
 	}
-	if manager.perform(&task, StagePulling, func() error {
+	if err := manager.perform(&task, StagePulling, func() error {
 		return manager.platform.PullTarget(ctx, ServiceBackend, task.Target.Backend)
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "pull_failed", false, err)
 		return
 	}
-	if manager.perform(&task, StagePulling, func() error {
+	if err := manager.perform(&task, StagePulling, func() error {
 		return manager.platform.PullTarget(ctx, ServiceWeb, task.Target.Web)
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "pull_failed", false, err)
 		return
 	}
-	if manager.perform(&task, StageSwitchingBackend, func() error {
+	if err := manager.perform(&task, StageSwitchingBackend, func() error {
 		return manager.platform.DeployTarget(ctx, ServiceBackend, task.Target, task.ID)
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "backend_switch_failed", true, err)
 		return
 	}
-	if manager.perform(&task, StageCheckingBackend, func() error {
+	if err := manager.perform(&task, StageCheckingBackend, func() error {
 		return manager.platform.WaitHealthy(ctx, ServiceBackend)
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "backend_unhealthy", true, err)
 		return
 	}
-	if manager.perform(&task, StageSwitchingWeb, func() error {
+	if err := manager.perform(&task, StageSwitchingWeb, func() error {
 		return manager.platform.DeployTarget(ctx, ServiceWeb, task.Target, task.ID)
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "web_switch_failed", true, err)
 		return
 	}
-	if manager.perform(&task, StageCheckingWeb, func() error {
+	if err := manager.perform(&task, StageCheckingWeb, func() error {
 		return manager.platform.WaitHealthy(ctx, ServiceWeb)
-	}) != nil {
+	}); err != nil {
+		manager.handleFailure(&task, "web_unhealthy", true, err)
 		return
 	}
-	if manager.stabilize(ctx, &task) != nil {
+	if err := manager.stabilize(ctx, &task); err != nil {
+		manager.handleFailure(&task, "stability_failed", true, err)
 		return
 	}
 
@@ -293,6 +311,93 @@ func (manager *Manager) run(task Task) {
 	}
 	task.ErrorMessage = ""
 	_ = manager.finishTask(task)
+}
+
+// Recover restores a safe terminal state after the updater process restarts.
+func (manager *Manager) Recover(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("system update recovery context is required")
+	}
+	manager.mu.Lock()
+	state, err := manager.store.Load()
+	manager.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if state.Task == nil || state.Task.Stage.Terminal() {
+		return nil
+	}
+	task := *state.Task
+
+	actualBackend, err := manager.platform.InspectService(ctx, ServiceBackend)
+	if err != nil {
+		manager.logFailure(task, "state_invalid", err)
+		return manager.markManualIntervention(&task, "state_invalid")
+	}
+	actualWeb, err := manager.platform.InspectService(ctx, ServiceWeb)
+	if err != nil {
+		manager.logFailure(task, "state_invalid", err)
+		return manager.markManualIntervention(&task, "state_invalid")
+	}
+	actual := ImagePair{Backend: actualBackend, Web: actualWeb}
+
+	switch task.Stage {
+	case StageChecking, StageBackingUp, StagePulling:
+		if imagePairMatches(actual, task.Original) {
+			return manager.markFailed(&task, "updater_restarted", false)
+		}
+		return manager.markManualIntervention(&task, "state_invalid")
+	case StageSwitchingBackend, StageCheckingBackend, StageSwitchingWeb, StageCheckingWeb, StageStabilizing, StageRollingBack:
+		return manager.rollback(ctx, &task, "updater_restarted")
+	case StageCleaning:
+		if !imagePairMatches(actual, task.Target) {
+			return manager.rollback(ctx, &task, "updater_restarted")
+		}
+		for _, service := range []ServiceName{ServiceBackend, ServiceWeb} {
+			if err := manager.platform.WaitHealthy(ctx, service); err != nil {
+				manager.logFailure(task, "rollback_failed", err)
+				return manager.rollback(ctx, &task, "updater_restarted")
+			}
+		}
+		return manager.resumeCleanup(ctx, &task)
+	default:
+		return manager.markManualIntervention(&task, "state_invalid")
+	}
+}
+
+func imagePairMatches(actual, expected ImagePair) bool {
+	return actual.Backend.Digest == expected.Backend.Digest && actual.Web.Digest == expected.Web.Digest
+}
+
+func (manager *Manager) resumeCleanup(ctx context.Context, task *Task) error {
+	cleanupPending := false
+	for _, service := range []ServiceName{ServiceBackend, ServiceWeb} {
+		old := task.Original.Backend
+		if service == ServiceWeb {
+			old = task.Original.Web
+		}
+		task.Stage = StageCleaning
+		if err := manager.saveTask(*task); err != nil {
+			return err
+		}
+		if err := manager.platform.RemoveOldImage(ctx, service, old); err != nil {
+			cleanupPending = true
+		}
+		if err := manager.saveTask(*task); err != nil {
+			return err
+		}
+	}
+	task.Stage = StageSucceeded
+	task.FinishedAt = timePointer(manager.now().UTC())
+	if cleanupPending {
+		task.Cleanup = CleanupPending
+		task.ErrorCode = "cleanup_pending"
+	} else {
+		task.Cleanup = CleanupComplete
+		task.ErrorCode = ""
+	}
+	task.ErrorMessage = ""
+	return manager.finishTask(*task)
 }
 
 func (manager *Manager) stabilize(ctx context.Context, task *Task) error {
@@ -332,6 +437,81 @@ func (manager *Manager) perform(task *Task, stage Stage, action func() error) er
 		return err
 	}
 	return manager.saveTask(*task)
+}
+
+func (manager *Manager) handleFailure(task *Task, code string, shouldRollback bool, cause error) {
+	manager.logFailure(*task, code, cause)
+	if shouldRollback {
+		if err := manager.rollback(manager.rootContext, task, code); err != nil {
+			manager.logFailure(*task, "rollback_failed", err)
+		}
+		return
+	}
+	if err := manager.markFailed(task, code, false); err != nil {
+		manager.logFailure(*task, code, err)
+	}
+}
+
+func (manager *Manager) rollback(ctx context.Context, task *Task, code string) error {
+	if !hasRollbackImages(task.Original) {
+		return manager.markManualIntervention(task, "state_invalid")
+	}
+	task.Stage = StageRollingBack
+	task.ErrorCode = code
+	task.ErrorMessage = ""
+	if err := manager.saveTask(*task); err != nil {
+		return err
+	}
+
+	var rollbackErr error
+	for _, service := range []ServiceName{ServiceBackend, ServiceWeb} {
+		if err := manager.platform.DeployRollback(ctx, service, task.Original, task.ID); err != nil && rollbackErr == nil {
+			rollbackErr = err
+		}
+		if err := manager.platform.WaitHealthy(ctx, service); err != nil && rollbackErr == nil {
+			rollbackErr = err
+		}
+	}
+	if rollbackErr != nil {
+		manager.logFailure(*task, "rollback_failed", rollbackErr)
+		return manager.markManualIntervention(task, "rollback_failed")
+	}
+	return manager.markFailed(task, code, true)
+}
+
+func hasRollbackImages(pair ImagePair) bool {
+	return pair.Backend.Digest != "" && pair.Web.Digest != "" && pair.Backend.RollbackAlias != "" && pair.Web.RollbackAlias != ""
+}
+
+func (manager *Manager) markFailed(task *Task, code string, rolledBack bool) error {
+	task.Stage = StageFailed
+	task.RolledBack = rolledBack
+	task.ErrorCode = code
+	task.ErrorMessage = ""
+	task.FinishedAt = timePointer(manager.now().UTC())
+	return manager.saveTask(*task)
+}
+
+func (manager *Manager) markManualIntervention(task *Task, code string) error {
+	task.Stage = StageManualIntervention
+	task.RolledBack = false
+	task.ErrorCode = code
+	task.ErrorMessage = ""
+	task.FinishedAt = timePointer(manager.now().UTC())
+	return manager.saveTask(*task)
+}
+
+var sensitiveFailureDetail = regexp.MustCompile(`(?i)(token|authorization|password|secret|runner output|stdout|stderr|(?:^|\s)[A-Z_][A-Z0-9_]*\s*[:=])`)
+
+func (manager *Manager) logFailure(task Task, code string, err error) {
+	if manager.logger == nil || err == nil {
+		return
+	}
+	detail := strings.TrimSpace(err.Error())
+	if sensitiveFailureDetail.MatchString(detail) {
+		detail = "redacted external failure"
+	}
+	manager.logger.Error("system update operation failed", "task_id", task.ID, "stage", task.Stage, "error_code", code, "detail", detail)
 }
 
 func (manager *Manager) saveTask(task Task) error {

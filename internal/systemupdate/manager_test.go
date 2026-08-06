@@ -1,10 +1,13 @@
 package systemupdate
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +301,237 @@ func TestManagerSuccessfulUpgradeClearsConcurrentSameVersionRepublish(t *testing
 	}
 }
 
+func TestManagerFailureMatrixRollsBackOnlyAfterBackendSwitch(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		failureKey string
+		code       string
+		rolledBack bool
+	}{
+		{name: "backend alias", failureKey: "alias:backend#1", code: "backup_failed"},
+		{name: "web alias", failureKey: "alias:web#1", code: "backup_failed"},
+		{name: "database backup", failureKey: "backup#1", code: "backup_failed"},
+		{name: "backend pull", failureKey: "pull:backend#1", code: "pull_failed"},
+		{name: "web pull", failureKey: "pull:web#1", code: "pull_failed"},
+		{name: "backend switch", failureKey: "deploy:backend#1", code: "backend_switch_failed", rolledBack: true},
+		{name: "backend health", failureKey: "health:backend#1", code: "backend_unhealthy", rolledBack: true},
+		{name: "web switch", failureKey: "deploy:web#1", code: "web_switch_failed", rolledBack: true},
+		{name: "web health", failureKey: "health:web#1", code: "web_unhealthy", rolledBack: true},
+		{name: "stability", failureKey: "health:backend#2", code: "stability_failed", rolledBack: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+			check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+			if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
+				t.Fatal(err)
+			}
+			platform := &failurePlatform{
+				images:   managerPair("v0.4.0"),
+				failures: map[string]error{test.failureKey: errors.New("runner output TOKEN=private PGPASSWORD=private")},
+			}
+			manager, err := NewManager(ManagerOptions{
+				Store: store, Checker: newTestChecker(managerPair("v0.4.0"), managerPair("v0.4.1"), func() time.Time { return now }),
+				Platform: platform, Now: func() time.Time { return now }, NewID: func() string { return "123e4567-e89b-12d3-a456-426614174000" },
+				Launch: func(job func()) { job() }, StableWindow: time.Nanosecond, StableInterval: time.Nanosecond,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			view, err := manager.Start(context.Background(), "v0.4.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Task == nil || state.Task.Stage != StageFailed || state.Task.ErrorCode != test.code || state.Task.RolledBack != test.rolledBack || state.Task.ErrorMessage != "" {
+				t.Fatalf("persisted failure = %#v", state.Task)
+			}
+			if view.Stage != StageFailed || view.ErrorCode != test.code || strings.Contains(view.ErrorMessage, "private") {
+				t.Fatalf("public failure = %#v", view)
+			}
+			if hasManagerCall(platform.calls, "clean:backend") || hasManagerCall(platform.calls, "clean:web") {
+				t.Fatalf("failed transaction performed cleanup: %v", platform.calls)
+			}
+			rollbackCalls := []string{"rollback:backend", "health:backend", "rollback:web", "health:web"}
+			if test.rolledBack && !reflect.DeepEqual(platform.calls[len(platform.calls)-4:], rollbackCalls) {
+				t.Fatalf("rollback calls = %v, want suffix %v", platform.calls, rollbackCalls)
+			}
+			if !test.rolledBack && (hasManagerCall(platform.calls, "rollback:backend") || hasManagerCall(platform.calls, "rollback:web")) {
+				t.Fatalf("pre-switch failure rolled back: %v", platform.calls)
+			}
+		})
+	}
+}
+
+func TestManagerRollbackFailureRequiresManualIntervention(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+	if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
+		t.Fatal(err)
+	}
+	platform := &failurePlatform{
+		images: managerPair("v0.4.0"),
+		failures: map[string]error{
+			"health:backend#1":   errors.New("backend unhealthy"),
+			"rollback:backend#1": errors.New("rollback output TOKEN=private"),
+		},
+	}
+	manager, err := NewManager(ManagerOptions{
+		Store: store, Checker: newTestChecker(managerPair("v0.4.0"), managerPair("v0.4.1"), func() time.Time { return now }),
+		Platform: platform, Now: func() time.Time { return now }, NewID: func() string { return "123e4567-e89b-12d3-a456-426614174000" },
+		Launch: func(job func()) { job() }, StableWindow: time.Nanosecond, StableInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.Start(context.Background(), "v0.4.1"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Task == nil || state.Task.Stage != StageManualIntervention || state.Task.ErrorCode != "rollback_failed" || state.Task.RolledBack {
+		t.Fatalf("manual intervention state = %#v", state.Task)
+	}
+	if hasManagerCall(platform.calls, "clean:backend") || hasManagerCall(platform.calls, "clean:web") {
+		t.Fatalf("rollback failure performed cleanup: %v", platform.calls)
+	}
+	if _, err := manager.Start(context.Background(), "v0.4.1"); err == nil {
+		t.Fatal("Start() accepted a manual intervention task")
+	}
+	if _, err := manager.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Task == nil || state.Task.Stage != StageManualIntervention {
+		t.Fatalf("Check() replaced manual intervention task: %#v", state.Task)
+	}
+}
+
+func TestManagerFailureLogsRedactEnvironmentDetails(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+	if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	manager, err := NewManager(ManagerOptions{
+		Store: store, Checker: newTestChecker(managerPair("v0.4.0"), managerPair("v0.4.1"), func() time.Time { return now }),
+		Platform: &failurePlatform{images: managerPair("v0.4.0"), failures: map[string]error{
+			"backup#1": errors.New("command failed API_KEY: private-value"),
+		}},
+		Now: func() time.Time { return now }, NewID: func() string { return "123e4567-e89b-12d3-a456-426614174000" },
+		Launch: func(job func()) { job() }, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.Start(context.Background(), "v0.4.1"); err != nil {
+		t.Fatal(err)
+	}
+	if output := logs.String(); strings.Contains(output, "API_KEY") || strings.Contains(output, "private-value") {
+		t.Fatalf("logger exposed environment detail: %q", output)
+	}
+}
+
+func TestManagerRecoverUsesPersistedStageAndActualServices(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		stage          Stage
+		images         ImagePair
+		withoutAlias   bool
+		failures       map[string]error
+		wantStage      Stage
+		wantCode       string
+		wantRolledBack bool
+		wantCalls      []string
+	}{
+		{name: "terminal", stage: StageSucceeded, images: managerPair("v0.4.1"), wantStage: StageSucceeded},
+		{name: "checking with originals", stage: StageChecking, images: managerPair("v0.4.0"), wantStage: StageFailed, wantCode: "updater_restarted", wantCalls: []string{"inspect:backend", "inspect:web"}},
+		{name: "backing up with originals", stage: StageBackingUp, images: managerPair("v0.4.0"), wantStage: StageFailed, wantCode: "updater_restarted", wantCalls: []string{"inspect:backend", "inspect:web"}},
+		{name: "pulling with originals", stage: StagePulling, images: managerPair("v0.4.0"), wantStage: StageFailed, wantCode: "updater_restarted", wantCalls: []string{"inspect:backend", "inspect:web"}},
+		{name: "switching backend", stage: StageSwitchingBackend, images: managerPair("v0.4.1"), wantStage: StageFailed, wantCode: "updater_restarted", wantRolledBack: true, wantCalls: []string{"inspect:backend", "inspect:web", "rollback:backend", "health:backend", "rollback:web", "health:web"}},
+		{name: "checking web", stage: StageCheckingWeb, images: managerPair("v0.4.1"), wantStage: StageFailed, wantCode: "updater_restarted", wantRolledBack: true, wantCalls: []string{"inspect:backend", "inspect:web", "rollback:backend", "health:backend", "rollback:web", "health:web"}},
+		{name: "stabilizing", stage: StageStabilizing, images: managerPair("v0.4.1"), wantStage: StageFailed, wantCode: "updater_restarted", wantRolledBack: true, wantCalls: []string{"inspect:backend", "inspect:web", "rollback:backend", "health:backend", "rollback:web", "health:web"}},
+		{name: "cleaning targets healthy", stage: StageCleaning, images: managerPair("v0.4.1"), wantStage: StageSucceeded, wantCalls: []string{"inspect:backend", "inspect:web", "health:backend", "health:web", "clean:backend", "clean:web"}},
+		{name: "missing aliases", stage: StageSwitchingBackend, images: managerPair("v0.4.1"), withoutAlias: true, wantStage: StageManualIntervention, wantCode: "state_invalid", wantCalls: []string{"inspect:backend", "inspect:web"}},
+		{name: "rollback health failure", stage: StageCheckingBackend, images: managerPair("v0.4.1"), failures: map[string]error{"health:backend#1": errors.New("recovery health failed")}, wantStage: StageManualIntervention, wantCode: "rollback_failed", wantCalls: []string{"inspect:backend", "inspect:web", "rollback:backend", "health:backend", "rollback:web", "health:web"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+			task := managerRecoveryTask(now, test.stage)
+			if test.withoutAlias {
+				task.Original.Backend.RollbackAlias = ""
+			}
+			check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+			if err := store.Save(PersistentState{LastCheck: &check, Task: &task}); err != nil {
+				t.Fatal(err)
+			}
+			platform := &failurePlatform{images: test.images, failures: test.failures}
+			manager, err := NewManager(ManagerOptions{
+				Store: store, Checker: newTestChecker(managerPair("v0.4.0"), managerPair("v0.4.1"), func() time.Time { return now }),
+				Platform: platform, Now: func() time.Time { return now }, RootContext: context.Background(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := manager.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			state, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Task == nil || state.Task.Stage != test.wantStage || state.Task.ErrorCode != test.wantCode || state.Task.RolledBack != test.wantRolledBack {
+				t.Fatalf("recovered task = %#v", state.Task)
+			}
+			if !reflect.DeepEqual(platform.calls, test.wantCalls) {
+				t.Fatalf("recovery calls = %v, want %v", platform.calls, test.wantCalls)
+			}
+			for _, forbidden := range []string{"alias:backend", "alias:web", "backup", "pull:backend", "pull:web", "deploy:backend", "deploy:web"} {
+				if hasManagerCall(platform.calls, forbidden) {
+					t.Fatalf("Recover() repeated %s: %v", forbidden, platform.calls)
+				}
+			}
+		})
+	}
+}
+
+func managerRecoveryTask(now time.Time, stage Stage) Task {
+	original := managerPair("v0.4.0")
+	original.Backend.RollbackAlias = "ace-it-center-rollback-backend:123e4567-e89b-12d3-a456-426614174000"
+	original.Web.RollbackAlias = "ace-it-center-rollback-web:123e4567-e89b-12d3-a456-426614174000"
+	return Task{
+		ID: "123e4567-e89b-12d3-a456-426614174000", Original: original, Target: managerPair("v0.4.1"), Stage: stage,
+		CreatedAt: now, StartedAt: timePointer(now), Cleanup: CleanupNotRun,
+	}
+}
+
+func hasManagerCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
+}
+
 type managerContextKey struct{}
 
 type managerResolver struct {
@@ -345,6 +579,73 @@ type managerPlatform struct {
 	cleanupError   map[ServiceName]error
 	beforeFinish   chan struct{}
 	allowFinish    chan struct{}
+}
+
+type failurePlatform struct {
+	images   ImagePair
+	failures map[string]error
+	calls    []string
+	counts   map[string]int
+}
+
+func (platform *failurePlatform) InspectService(_ context.Context, service ServiceName) (Image, error) {
+	if err := platform.record("inspect:" + string(service)); err != nil {
+		return Image{}, err
+	}
+	if service == ServiceBackend {
+		return platform.images.Backend, nil
+	}
+	return platform.images.Web, nil
+}
+
+func (platform *failurePlatform) CreateRollbackAlias(_ context.Context, service ServiceName, image Image, taskID string) (Image, error) {
+	if err := platform.record("alias:" + string(service)); err != nil {
+		return Image{}, err
+	}
+	image.RollbackAlias = "ace-it-center-rollback-" + string(service) + ":" + strings.ToLower(taskID)
+	return image, nil
+}
+
+func (platform *failurePlatform) BackupDatabase(_ context.Context, _ string) (string, error) {
+	if err := platform.record("backup"); err != nil {
+		return "", err
+	}
+	return "/private/upgrade.dump", nil
+}
+
+func (platform *failurePlatform) PullTarget(_ context.Context, service ServiceName, _ Image) error {
+	return platform.record("pull:" + string(service))
+}
+
+func (platform *failurePlatform) DeployTarget(_ context.Context, service ServiceName, _ ImagePair, _ string) error {
+	return platform.record("deploy:" + string(service))
+}
+
+func (platform *failurePlatform) DeployRollback(_ context.Context, service ServiceName, pair ImagePair, _ string) error {
+	if pair.Backend.RollbackAlias == "" || pair.Web.RollbackAlias == "" {
+		return errors.New("rollback aliases were not provided")
+	}
+	return platform.record("rollback:" + string(service))
+}
+
+func (platform *failurePlatform) WaitHealthy(_ context.Context, service ServiceName) error {
+	return platform.record("health:" + string(service))
+}
+
+func (platform *failurePlatform) RemoveOldImage(_ context.Context, service ServiceName, _ Image) error {
+	return platform.record("clean:" + string(service))
+}
+
+func (platform *failurePlatform) record(call string) error {
+	if platform.counts == nil {
+		platform.counts = make(map[string]int)
+	}
+	platform.counts[call]++
+	platform.calls = append(platform.calls, call)
+	if err := platform.failures[call+"#"+strconv.Itoa(platform.counts[call])]; err != nil {
+		return err
+	}
+	return platform.failures[call]
 }
 
 func (platform *managerPlatform) InspectService(ctx context.Context, service ServiceName) (Image, error) {
