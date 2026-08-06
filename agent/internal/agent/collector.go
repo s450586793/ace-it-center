@@ -14,7 +14,27 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
+type HostCollector struct {
+	networkSampler *NetworkUsageSampler
+}
+
 func Collect(version string) (core.EnrollRequest, core.Heartbeat, error) {
+	return NewHostCollector().Collect(version)
+}
+
+func NewHostCollector() *HostCollector {
+	return NewHostCollectorWithNetworkUsage("", nil)
+}
+
+func NewHostCollectorWithNetworkUsage(path string, report func(error)) *HostCollector {
+	return newHostCollector(NewNetworkUsageSampler(path, report))
+}
+
+func newHostCollector(networkSampler *NetworkUsageSampler) *HostCollector {
+	return &HostCollector{networkSampler: networkSampler}
+}
+
+func (c *HostCollector) Collect(version string) (core.EnrollRequest, core.Heartbeat, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return core.EnrollRequest{}, core.Heartbeat{}, fmt.Errorf("read hostname: %w", err)
@@ -43,15 +63,25 @@ func Collect(version string) (core.EnrollRequest, core.Heartbeat, error) {
 	if runtime.GOOS == "windows" {
 		nodeType = "windows"
 	}
+	network := c.networkSampler.Sample()
 	heartbeat := core.Heartbeat{
-		Hostname:      hostname,
-		AgentVersion:  version,
-		OSName:        hostInfo.Platform,
-		OSVersion:     hostInfo.PlatformVersion,
-		IPAddress:     primaryIP(),
-		CPUPercent:    clampPercent(percentages[0]),
-		MemoryPercent: clampPercent(memory.UsedPercent),
-		DiskPercent:   clampPercent(diskUsage.UsedPercent),
+		Hostname:                   hostname,
+		AgentVersion:               version,
+		OSName:                     hostInfo.Platform,
+		OSVersion:                  hostInfo.PlatformVersion,
+		IPAddress:                  primaryIP(),
+		CPUPercent:                 clampPercent(percentages[0]),
+		MemoryPercent:              clampPercent(memory.UsedPercent),
+		DiskPercent:                clampPercent(diskUsage.UsedPercent),
+		NetworkMetricsAvailable:    network.MetricsAvailable,
+		NetworkUploadMBPerSecond:   network.UploadMBPerSecond,
+		NetworkDownloadMBPerSecond: network.DownloadMBPerSecond,
+		NetworkUsageAvailable:      network.UsageAvailable,
+		NetworkUsageDay:            network.UsageDay,
+		NetworkTodayUploadBytes:    network.TodayUploadBytes,
+		NetworkTodayDownloadBytes:  network.TodayDownloadBytes,
+		NetworkMonthUploadBytes:    network.MonthUploadBytes,
+		NetworkMonthDownloadBytes:  network.MonthDownloadBytes,
 	}
 	request := core.EnrollRequest{
 		Hostname:  hostname,
@@ -70,13 +100,24 @@ func primaryIP() string {
 	if err != nil {
 		return ""
 	}
+	return primaryIPFromAddresses(addresses)
+}
+
+func primaryIPFromAddresses(addresses []net.Addr) string {
+	var ipv6Fallback string
 	for _, address := range addresses {
 		ip, _, err := net.ParseCIDR(address.String())
-		if err == nil && !ip.IsLoopback() && ip.IsGlobalUnicast() {
+		if err != nil || ip.IsLoopback() || !ip.IsGlobalUnicast() {
+			continue
+		}
+		if ip.To4() != nil {
 			return ip.String()
 		}
+		if ipv6Fallback == "" {
+			ipv6Fallback = ip.String()
+		}
 	}
-	return ""
+	return ipv6Fallback
 }
 
 func clampPercent(value float64) float64 {

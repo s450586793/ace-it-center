@@ -200,7 +200,7 @@ The diagnostic archive is written to a user-selected path or Desktop and is neve
 
 ## 8. Automatic Update Design
 
-The Service checks for updates after enrollment/startup and every six hours with random jitter.
+The Service checks for updates after enrollment/startup and every hour with a random 0..10 minute jitter.
 
 The stable manifest is served from:
 

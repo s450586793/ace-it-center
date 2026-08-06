@@ -21,7 +21,7 @@
 - Store runtime state under `C:\ProgramData\AceITCenter\` with System/Administrators-only credential access.
 - Use `\\.\pipe\AceITCenterAgent`, bounded 64 KiB JSON messages, explicit methods, and per-request timeouts.
 - Rotate JSONL logs at 10 MiB, retain seven files, and expire after 14 days.
-- Check stable updates at startup and every six hours with jitter; install valid newer releases silently.
+- Check stable updates at startup and every hour with jitter; install valid newer releases silently.
 - Verify every update with an embedded Ed25519 public key, exact size, and SHA-256; reject downgrade and every cross-origin redirect.
 - Generate or locate the persistent DSM signing key before building a release; derive its public key inside the disposable builder and inject that key into the Agent binary without exposing the private key.
 - Keep a last-known-good binary and roll back when post-update Service/pipe health validation fails.
@@ -666,7 +666,7 @@ The Service copies `AceAgent.exe` to a temporary helper path and starts `update-
 
 - [ ] **Step 6: Schedule checks in the controller**
 
-Check once after enrollment/startup and every six hours plus a random 0..30 minute jitter. One update may run at a time. Manual tray check uses the same mutex and pipeline.
+Check once after enrollment/startup and every hour plus a random 0..10 minute jitter. One update may run at a time. Manual tray check uses the same mutex and pipeline.
 
 - [ ] **Step 7: Run focused, full, and Windows compile checks**
 

@@ -632,9 +632,9 @@ Run: `npm run build`
 
 Workdir for npm commands: `frontend`.
 
-Run: `sh scripts/build-windows-agent.test.sh`
+Run: `bash scripts/build-windows-agent.test.sh`
 
-Run: `sh scripts/publish-windows-release.test.sh`
+Run: `bash scripts/publish-windows-release.test.sh`
 
 Expected: every command exits 0 with zero failed tests.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isNodeOnline, percentLabel } from './status'
+import { isNodeOnline, networkRateLabel, percentLabel } from './status'
 
 describe('isNodeOnline', () => {
   const now = new Date('2026-07-26T02:00:00Z')
@@ -22,3 +22,13 @@ describe('percentLabel', () => {
   })
 })
 
+describe('networkRateLabel', () => {
+  it.each([
+    [0, '0.00 MB/s'],
+    [1.256, '1.26 MB/s'],
+    [-1, '0.00 MB/s'],
+    [Number.NaN, '0.00 MB/s'],
+  ])('formats network rate %s', (value, expected) => {
+    expect(networkRateLabel(value)).toBe(expected)
+  })
+})

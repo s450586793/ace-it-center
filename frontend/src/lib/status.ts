@@ -10,3 +10,7 @@ export function percentLabel(value: number): string {
   return `${Math.round(Math.min(100, Math.max(0, safeValue)))}%`
 }
 
+export function networkRateLabel(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0
+  return `${safeValue.toFixed(2)} MB/s`
+}

@@ -1,0 +1,25 @@
+name: ace-it-center-windows-builder
+
+services:
+  windows-builder:
+    build:
+      context: ..
+      dockerfile: deploy/windows-builder.Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.26.0}
+        INNO_SETUP_VERSION: ${INNO_SETUP_VERSION:-6.3.3}
+        INNO_SETUP_SHA256: ${INNO_SETUP_SHA256:-0bcb2a409dea17e305a27a6b09555cabe600e984f88570ab72575cd7e93c95e6}
+        INNOEXTRACT_COMMIT: ${INNOEXTRACT_COMMIT:-098180a06075c2d68fc27da6ec645b47618babfd}
+        INNOEXTRACT_SHA256: ${INNOEXTRACT_SHA256:-aa6d690296e85f3928139f929ff760dcf710a0d379113e7c70b4da3a391bba92}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian-security}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    environment:
+      RELEASE_VERSION: ${RELEASE_VERSION:?RELEASE_VERSION is required}
+      RELEASE_COMMIT: ${RELEASE_COMMIT:?RELEASE_COMMIT is required}
+      RELEASE_BUILT_AT: ${RELEASE_BUILT_AT:-}
+      RELEASE_PUBLISHED_AT: ${RELEASE_PUBLISHED_AT:-}
+      ACE_WINDOWS_MINIMUM_OS: ${ACE_WINDOWS_MINIMUM_OS:-10.0.17763}
+    volumes:
+      - ${ACE_RELEASES_DIR:-/volume4/docker/docker/ace-it-center/releases}:/out
+      - ${ACE_UPDATE_SIGNING_KEY:-/volume4/docker/docker/ace-it-center/secrets/update-signing.key}:/run/secrets/update-signing.key:ro

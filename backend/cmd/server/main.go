@@ -13,6 +13,7 @@ import (
 
 	"aceitcenter.local/platform/internal/api"
 	"aceitcenter.local/platform/internal/config"
+	"aceitcenter.local/platform/internal/maintenance"
 	postgresstore "aceitcenter.local/platform/internal/postgres"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -43,6 +44,10 @@ func main() {
 		logger.Error("migrate database", "error", err)
 		os.Exit(1)
 	}
+	retentionContext, cancelRetention := context.WithCancel(context.Background())
+	defer cancelRetention()
+	go maintenance.NewNetworkRetention(repository, logger, time.Now, 6*time.Hour, 90*24*time.Hour).Run(retentionContext)
+	go maintenance.NewPairingRetention(repository, logger, time.Now, 24*time.Hour, 30*24*time.Hour).Run(retentionContext)
 
 	handler := api.NewRouterWithOptions(repository, api.RouterOptions{SecureCookies: cfg.SecureCookies})
 	server := &http.Server{
@@ -71,6 +76,7 @@ func main() {
 		}
 	}
 
+	cancelRetention()
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdownContext); err != nil {

@@ -1,23 +1,58 @@
 <script setup lang="ts">
-import { Cpu, Download, Key, Monitor } from '@element-plus/icons-vue'
+import { computed, onMounted, ref } from 'vue'
+import { Cpu, Download, Monitor } from '@element-plus/icons-vue'
 
-defineProps<{ canEnroll: boolean }>()
-const emit = defineEmits<{ enroll: [] }>()
+const releaseManifestPath = '/downloads/windows/stable/latest.json'
+const fallbackWindowsVersion = '0.3.8'
+const windowsVersion = ref(fallbackWindowsVersion)
+const windowsInstallerPath = ref(installerPath(fallbackWindowsVersion))
 
-const agents = [
+function installerPath(version: string): string {
+  return `/downloads/windows/stable/AceAgentSetup-windows-amd64-V${version}.exe`
+}
+
+function isReleaseVersion(value: unknown): value is string {
+  return typeof value === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)
+}
+
+async function loadLatestWindowsRelease() {
+  try {
+    const response = await fetch(releaseManifestPath, { credentials: 'same-origin' })
+    if (!response.ok) return
+
+    const manifest = await response.json() as { version?: unknown; url?: unknown }
+    if (!isReleaseVersion(manifest.version)) return
+
+    const expectedPath = installerPath(manifest.version)
+    if (manifest.url !== expectedPath) return
+
+    windowsVersion.value = manifest.version
+    windowsInstallerPath.value = expectedPath
+  } catch {
+    // 下载清单不可用时保留已发布的稳定版本链接。
+  }
+}
+
+const agents = computed(() => [
   {
-    platform: 'Windows x64',
-    fileName: 'AceAgent-windows-amd64.exe',
-    href: '/downloads/AceAgent-windows-amd64.exe',
+    platform: 'Windows 10/11 x64',
+    architecture: 'AMD64 / 64-bit installer',
+    note: '安装后从系统托盘打开 Ace Agent，填写服务器地址，再回到平台的待配对设备确认。',
+    fileName: `AceAgentSetup-windows-amd64-V${windowsVersion.value}.exe`,
+    href: windowsInstallerPath.value,
     icon: Monitor,
   },
   {
     platform: 'Linux x64',
+    architecture: 'AMD64 / x86-64',
+    note: '下载后授权执行，在终端使用 sudo 启动 Agent。',
     fileName: 'ace-agent-linux-amd64',
     href: '/downloads/ace-agent-linux-amd64',
     icon: Cpu,
   },
-]
+])
+
+onMounted(() => { void loadLatestWindowsRelease() })
 </script>
 
 <template>
@@ -31,7 +66,11 @@ const agents = [
     <div class="agent-download-list">
       <article v-for="agent in agents" :key="agent.platform" class="agent-download-row">
         <span class="platform-symbol" aria-hidden="true"><component :is="agent.icon" /></span>
-        <div class="agent-platform"><strong>{{ agent.platform }}</strong><small>AMD64 / x86-64</small></div>
+        <div class="agent-platform">
+          <strong>{{ agent.platform }}</strong>
+          <small>{{ agent.architecture }}</small>
+          <p>{{ agent.note }}</p>
+        </div>
         <code class="agent-file-name">{{ agent.fileName }}</code>
         <a
           class="primary-button download-button"
@@ -49,17 +88,5 @@ const agents = [
       <div><dt>MeshCentral Agent</dt><dd>远程桌面、终端和文件操作使用的独立客户端，后续接入。</dd></div>
     </dl>
 
-    <div class="download-enrollment">
-      <div><Key aria-hidden="true" /><span><strong>准备接入设备</strong><small>下载后生成一次性 Enrollment Token。</small></span></div>
-      <button
-        class="primary-button"
-        data-action="enroll"
-        type="button"
-        :disabled="!canEnroll"
-        @click="emit('enroll')"
-      >
-        <Key aria-hidden="true" />生成接入令牌
-      </button>
-    </div>
   </section>
 </template>
