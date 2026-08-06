@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -59,7 +60,7 @@ func (config Config) validateUpdater() error {
 	if err != nil || parsedURL.Scheme != "http" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
 		return errors.New("ACE_UPDATER_URL is invalid")
 	}
-	if strings.TrimSpace(config.UpdaterToken) != config.UpdaterToken || utf8.RuneCountInString(config.UpdaterToken) < 32 || strings.HasPrefix(strings.ToLower(config.UpdaterToken), "replace-with-") {
+	if strings.IndexFunc(config.UpdaterToken, unicode.IsSpace) >= 0 || utf8.RuneCountInString(config.UpdaterToken) < 32 || strings.HasPrefix(strings.ToLower(config.UpdaterToken), "replace-with-") {
 		return errors.New("ACE_UPDATER_TOKEN must be a non-placeholder value of at least 32 characters")
 	}
 	return nil

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"aceitcenter.local/platform/internal/systemupdate"
 )
@@ -64,7 +65,7 @@ func New(rawURL, token string, httpClient *http.Client) (*Client, error) {
 	if err != nil || baseURL.Scheme != "http" || baseURL.Host == "" || baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
 		return nil, errors.New("invalid updater URL")
 	}
-	if strings.TrimSpace(token) == "" {
+	if token == "" || strings.IndexFunc(token, unicode.IsSpace) >= 0 {
 		return nil, errors.New("updater token is required")
 	}
 	if httpClient == nil {

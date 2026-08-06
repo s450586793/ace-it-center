@@ -69,6 +69,10 @@ func TestLoadRequiresValidCompleteUpdaterConfiguration(t *testing.T) {
 		{name: "fragment", url: "http://updater:8090#other", token: "1234567890abcdefghijklmnopqrstuvwxyzABCD"},
 		{name: "short token", url: "http://updater:8090", token: "too-short"},
 		{name: "placeholder token", url: "http://updater:8090", token: "replace-with-a-long-random-token-value"},
+		{name: "space token", url: "http://updater:8090", token: "1234567890abcdefgh ijklmnopqrstuvwxyzABCD"},
+		{name: "tab token", url: "http://updater:8090", token: "1234567890abcdefgh\tijklmnopqrstuvwxyzABCD"},
+		{name: "newline token", url: "http://updater:8090", token: "1234567890abcdefgh\nijklmnopqrstuvwxyzABCD"},
+		{name: "unicode whitespace token", url: "http://updater:8090", token: "1234567890abcdefgh\u00a0ijklmnopqrstuvwxyzABCD"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("DATABASE_URL", "postgres://ace:database-secret@postgres/ace?sslmode=disable")

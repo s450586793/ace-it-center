@@ -58,6 +58,26 @@ func TestNewRejectsUnsafeOrIncompleteBaseURLs(t *testing.T) {
 	}
 }
 
+func TestNewRejectsTokensContainingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	for _, token := range []string{
+		"correct horse-battery-staple-0123456789",
+		"correct\thorse-battery-staple-0123456789",
+		"correct\nhorse-battery-staple-0123456789",
+		"correct\u00a0horse-battery-staple-0123456789",
+	} {
+		t.Run("whitespace", func(t *testing.T) {
+			t.Parallel()
+			if _, err := New("http://updater:8090", token, nil); err == nil {
+				t.Fatalf("New accepted whitespace token")
+			} else if strings.Contains(err.Error(), token) {
+				t.Fatalf("New error leaked token: %q", err)
+			}
+		})
+	}
+}
+
 func TestClientRejectsOversizedAndMalformedResponses(t *testing.T) {
 	t.Parallel()
 

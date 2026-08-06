@@ -23,6 +23,10 @@ type SystemUpdater interface {
 }
 
 func (s *server) systemUpdateStatus(c *gin.Context) {
+	if hasSystemUpdateRequestBody(c.Request.Body) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid update request"})
+		return
+	}
 	if s.systemUpdater == nil {
 		writeSystemUpdateUnavailable(c)
 		return
@@ -36,6 +40,10 @@ func (s *server) systemUpdateStatus(c *gin.Context) {
 }
 
 func (s *server) checkSystemUpdate(c *gin.Context) {
+	if hasSystemUpdateRequestBody(c.Request.Body) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid update request"})
+		return
+	}
 	if s.systemUpdater == nil {
 		writeSystemUpdateUnavailable(c)
 		return
@@ -64,6 +72,14 @@ func (s *server) startSystemUpdate(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, task)
+}
+
+func hasSystemUpdateRequestBody(body io.Reader) bool {
+	if body == nil {
+		return false
+	}
+	encoded, err := io.ReadAll(io.LimitReader(body, maxSystemUpdateRequestBytes+1))
+	return err != nil || len(encoded) != 0
 }
 
 func decodeSystemUpdateRequest(body io.Reader) (systemupdate.StartRequest, error) {
