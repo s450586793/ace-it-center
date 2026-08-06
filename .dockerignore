@@ -2,9 +2,15 @@
 .gitignore
 .worktrees
 .workflow
+.workflow-test-sync
 frontend/node_modules
 frontend/dist
 coverage
 *.log
 deploy/.env
 deploy/data
+postgres
+releases
+backup
+secrets/
+deploy/secrets/

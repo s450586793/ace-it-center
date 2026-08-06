@@ -1,6 +1,11 @@
 .worktrees/
 .workflow/
+.workflow-test-sync/
 .env
+postgres/
+releases/
+secrets/
+backup/
 dist/
 node_modules/
 coverage/
