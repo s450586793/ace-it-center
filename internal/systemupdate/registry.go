@@ -2,8 +2,6 @@ package systemupdate
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -22,72 +20,63 @@ type ImageResolver interface {
 
 // RegistryError reports a retryable error while communicating with a registry.
 type RegistryError struct {
-	Operation string
 }
 
 func (err *RegistryError) Error() string {
-	return "registry " + err.Operation + " failed"
+	return "registry image resolution failed"
 }
 
 // RegistryResolver resolves public image metadata from a container registry.
 type RegistryResolver struct {
 	Transport http.RoundTripper
-	Platform  v1.Platform
 }
 
 // Resolve returns the linux/amd64 image metadata for the stable tag.
 func (resolver *RegistryResolver) Resolve(ctx context.Context, repository, tag string) (Image, error) {
 	if ctx == nil {
-		return Image{}, errors.New("registry context is required")
+		return Image{}, &RegistryError{}
 	}
 	if tag != stableTag {
-		return Image{}, errors.New("registry tag must be stable")
+		return Image{}, &RegistryError{}
 	}
 	repo, err := name.NewRepository(repository, name.StrictValidation)
 	if err != nil {
-		return Image{}, fmt.Errorf("parse registry repository: %w", err)
+		return Image{}, &RegistryError{}
 	}
 
 	options := []remote.Option{remote.WithAuth(authn.Anonymous), remote.WithContext(ctx)}
-	if resolver.Transport != nil {
+	if resolver != nil && resolver.Transport != nil {
 		options = append(options, remote.WithTransport(resolver.Transport))
 	}
 	index, err := remote.Index(repo.Tag(tag), options...)
 	if err != nil {
-		return Image{}, &RegistryError{Operation: "index lookup"}
+		return Image{}, &RegistryError{}
 	}
 	topLevelDigest, err := index.Digest()
 	if err != nil {
-		return Image{}, &RegistryError{Operation: "index digest"}
+		return Image{}, &RegistryError{}
 	}
 	manifest, err := index.IndexManifest()
 	if err != nil {
-		return Image{}, &RegistryError{Operation: "index manifest"}
+		return Image{}, &RegistryError{}
 	}
-	image, err := imageForPlatform(index, manifest, resolver.platform())
+	image, err := imageForPlatform(index, manifest, v1.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil {
 		return Image{}, err
 	}
 	config, err := image.ConfigFile()
 	if err != nil {
-		return Image{}, &RegistryError{Operation: "image config"}
+		return Image{}, &RegistryError{}
 	}
 	version := config.Config.Labels["org.opencontainers.image.version"]
 	if err := ValidateVersion(version); err != nil {
-		return Image{}, fmt.Errorf("validate registry image version: %w", err)
+		return Image{}, &RegistryError{}
 	}
 	created, err := time.Parse(time.RFC3339, config.Config.Labels["org.opencontainers.image.created"])
 	if err != nil {
-		return Image{}, errors.New("registry image created label must be RFC3339")
+		return Image{}, &RegistryError{}
 	}
 	return Image{Repository: repository, Version: version, Digest: topLevelDigest.String(), PublishedAt: &created}, nil
-}
-
-func (resolver *RegistryResolver) platform() v1.Platform {
-	if resolver.Platform.OS != "" || resolver.Platform.Architecture != "" {
-		return resolver.Platform
-	}
-	return v1.Platform{OS: "linux", Architecture: "amd64"}
 }
 
 func imageForPlatform(index v1.ImageIndex, manifest *v1.IndexManifest, platform v1.Platform) (v1.Image, error) {
@@ -95,10 +84,10 @@ func imageForPlatform(index v1.ImageIndex, manifest *v1.IndexManifest, platform 
 		if descriptor.Platform != nil && descriptor.Platform.Satisfies(platform) {
 			image, err := index.Image(descriptor.Digest)
 			if err != nil {
-				return nil, &RegistryError{Operation: "platform image"}
+				return nil, &RegistryError{}
 			}
 			return image, nil
 		}
 	}
-	return nil, errors.New("registry image does not support required platform")
+	return nil, &RegistryError{}
 }

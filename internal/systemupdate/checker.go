@@ -62,11 +62,11 @@ func (checker *Checker) Check(ctx context.Context) (CheckResult, error) {
 
 	targetBackend, err := checker.resolver.Resolve(ctx, checker.backendRepo, stableTag)
 	if err != nil {
-		return CheckResult{}, &RegistryError{Operation: "backend lookup"}
+		return CheckResult{}, &RegistryError{}
 	}
 	targetWeb, err := checker.resolver.Resolve(ctx, checker.webRepo, stableTag)
 	if err != nil {
-		return CheckResult{}, &RegistryError{Operation: "web lookup"}
+		return CheckResult{}, &RegistryError{}
 	}
 	target := ImagePair{Backend: targetBackend, Web: targetWeb}
 	if err := checker.validatePair(target, "stable"); err != nil {
