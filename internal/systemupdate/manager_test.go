@@ -187,6 +187,60 @@ func TestManagerSuccessfulUpgradeReportsCleanupPendingWithoutInternalDetails(t *
 	}
 }
 
+func TestManagerSuccessfulUpgradePreservesNewerConcurrentCheck(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+	if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
+		t.Fatal(err)
+	}
+	beforeFinish := make(chan struct{})
+	allowFinish := make(chan struct{})
+	platform := &managerPlatform{
+		images:       managerPair("v0.4.0"),
+		beforeFinish: beforeFinish,
+		allowFinish:  allowFinish,
+	}
+	checker := newTestChecker(managerPair("v0.4.1"), managerPair("v0.4.2"), func() time.Time { return now })
+	manager, err := NewManager(ManagerOptions{
+		Store: store, Checker: checker, Platform: platform, Now: func() time.Time { return now },
+		NewID:  func() string { return "123e4567-e89b-12d3-a456-426614174000" },
+		Launch: func(job func()) { job() }, StableWindow: time.Nanosecond, StableInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type startResult struct {
+		view TaskView
+		err  error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		view, startErr := manager.Start(context.Background(), "v0.4.1")
+		started <- startResult{view: view, err: startErr}
+	}()
+
+	<-beforeFinish
+	if _, err := manager.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(allowFinish)
+	result := <-started
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.view.Stage != StageSucceeded || state.Task == nil || state.Task.Stage != StageSucceeded || state.LastCheck == nil {
+		t.Fatalf("result = %#v, state = %#v", result, state)
+	}
+	if state.LastCheck.Current.Backend.Version != "v0.4.1" || state.LastCheck.Current.Web.Version != "v0.4.1" || state.LastCheck.Target.Backend.Version != "v0.4.2" || state.LastCheck.Target.Web.Version != "v0.4.2" || !state.LastCheck.Available {
+		t.Fatalf("last check = %#v", state.LastCheck)
+	}
+}
+
 type managerContextKey struct{}
 
 type managerResolver struct {
@@ -232,6 +286,8 @@ type managerPlatform struct {
 	calls          []string
 	expectedStages []Stage
 	cleanupError   map[ServiceName]error
+	beforeFinish   chan struct{}
+	allowFinish    chan struct{}
 }
 
 func (platform *managerPlatform) InspectService(ctx context.Context, service ServiceName) (Image, error) {
@@ -278,6 +334,10 @@ func (platform *managerPlatform) WaitHealthy(ctx context.Context, service Servic
 func (platform *managerPlatform) RemoveOldImage(ctx context.Context, service ServiceName, _ Image) error {
 	if err := platform.record(ctx, "clean:"+string(service)); err != nil {
 		return err
+	}
+	if service == ServiceWeb && platform.beforeFinish != nil {
+		close(platform.beforeFinish)
+		<-platform.allowFinish
 	}
 	return platform.cleanupError[service]
 }
