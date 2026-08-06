@@ -144,6 +144,79 @@ describe('SystemUpdate', () => {
     wrapper.unmount()
   })
 
+  it('backs off network rejections, preserves the active stage, and resets after recovery', async () => {
+    vi.useFakeTimers()
+    vi.mocked(apiRequest)
+      .mockResolvedValueOnce(activeStatus())
+      .mockRejectedValueOnce(new TypeError('network disconnected'))
+      .mockRejectedValueOnce(new TypeError('network disconnected'))
+      .mockResolvedValueOnce(activeStatus())
+      .mockResolvedValueOnce(activeStatus())
+    const wrapper = mountUpdate()
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushPromises()
+    expect(wrapper.get('[data-stage="current"]').text()).toContain('正在拉取升级包')
+    expect(wrapper.emitted('session-expired')).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(3)
+
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(apiRequest).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(4)
+
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(apiRequest).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(5)
+    wrapper.unmount()
+  })
+
+  it('stops polling after a non-retryable API error', async () => {
+    vi.useFakeTimers()
+    vi.mocked(apiRequest)
+      .mockResolvedValueOnce(activeStatus())
+      .mockRejectedValueOnce(new APIError(409, 'update cannot be started'))
+    const wrapper = mountUpdate()
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushPromises()
+    expect(wrapper.emitted('session-expired')).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('does not schedule another poll when an in-flight request resolves after unmount', async () => {
+    vi.useFakeTimers()
+    let resolvePoll: ((value: unknown) => void) | undefined
+    vi.mocked(apiRequest).mockImplementation(path => {
+      if (path === '/api/v1/system/update/check') return Promise.resolve(activeStatus())
+      return new Promise<unknown>(resolve => { resolvePoll = resolve }) as Promise<never>
+    })
+    const wrapper = mountUpdate()
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+    resolvePoll?.(activeStatus())
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+  })
+
   it('emits session expiry instead of showing an authorization error', async () => {
     vi.mocked(apiRequest).mockRejectedValue(new APIError(401, 'session expired'))
     const wrapper = mountUpdate()

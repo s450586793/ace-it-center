@@ -58,8 +58,8 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof APIError && error.status === 401
 }
 
-function isTemporaryUnavailable(error: unknown): boolean {
-  return error instanceof APIError && (error.status === 502 || error.status === 503)
+function isRetryablePollingError(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof APIError && (error.status === 502 || error.status === 503))
 }
 
 function clearPollTimer() {
@@ -79,11 +79,13 @@ async function refreshStatus(check: boolean) {
   if (checkBusy.value) return
   checkBusy.value = true
   safeNotice.value = ''
+  let shouldPoll = false
   try {
     status.value = check
       ? await apiRequest<SystemUpdateStatus>('/api/v1/system/update/check', { method: 'POST', body: '{}' })
       : await apiRequest<SystemUpdateStatus>('/api/v1/system/update')
     retryDelay = 2_000
+    shouldPoll = true
   } catch (requestError) {
     if (isUnauthorized(requestError)) {
       sessionExpired = true
@@ -91,14 +93,15 @@ async function refreshStatus(check: boolean) {
       emit('session-expired')
       return
     }
-    if (activeTask.value && isTemporaryUnavailable(requestError)) {
+    if (activeTask.value && isRetryablePollingError(requestError)) {
       retryDelay = Math.min(retryDelay * 2, 5_000)
-    } else if (!activeTask.value) {
+      shouldPoll = true
+    } else {
       safeNotice.value = '暂时无法检查升级状态，请稍后重试。'
     }
   } finally {
     checkBusy.value = false
-    schedulePoll()
+    if (shouldPoll) schedulePoll()
   }
 }
 
