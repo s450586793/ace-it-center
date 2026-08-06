@@ -87,37 +87,59 @@ func TestSystemUpdateRoutesProxyOwnerRequests(t *testing.T) {
 	}
 }
 
-func TestSystemUpdateStatusAndCheckRejectNonemptyRequestBodies(t *testing.T) {
+func TestSystemUpdateCheckAcceptsEmptyBodyAndStrictEmptyJSONObject(t *testing.T) {
 	t.Parallel()
 
-	for _, route := range []struct {
-		method string
-		path   string
-	}{
-		{method: http.MethodGet, path: "/api/v1/system/update"},
-		{method: http.MethodPost, path: "/api/v1/system/update/check"},
-	} {
-		for _, body := range []string{
-			`{"unknown":true}`,
-			`{} {}`,
-			strings.Repeat("x", 1025),
-		} {
-			route, body := route, body
-			t.Run(route.method+" "+route.path, func(t *testing.T) {
-				t.Parallel()
-				updater := &fakeSystemUpdater{}
-				router := NewRouterWithOptions(authenticatedRepository(), RouterOptions{Now: func() time.Time { return fixedNow }, SystemUpdater: updater})
-				response := requestSystemUpdate(router, route.method, route.path, body, &http.Cookie{Name: sessionCookieName, Value: "authenticated-session"})
-				if response.Code != http.StatusBadRequest || response.Body.String() != `{"error":"invalid update request"}` {
-					t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
-				}
-				if updater.statusCalls != 0 || updater.checkCalls != 0 {
-					t.Fatalf("updater calls status=%d check=%d", updater.statusCalls, updater.checkCalls)
-				}
-			})
+	for _, body := range []string{"", `{}`} {
+		body := body
+		t.Run("body="+body, func(t *testing.T) {
+			t.Parallel()
+			updater := &fakeSystemUpdater{check: systemupdate.StatusView{Current: systemupdate.VersionPairView{Backend: "v0.4.0", Web: "v0.4.0"}}}
+			router := NewRouterWithOptions(authenticatedRepository(), RouterOptions{Now: func() time.Time { return fixedNow }, SystemUpdater: updater})
+			response := requestSystemUpdate(router, http.MethodPost, "/api/v1/system/update/check", body, &http.Cookie{Name: sessionCookieName, Value: "authenticated-session"})
+			if response.Code != http.StatusOK || updater.checkCalls != 1 {
+				t.Fatalf("body=%q status=%d calls=%d response=%s", body, response.Code, updater.checkCalls, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestSystemUpdateStatusRejectsAnyRequestBody(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{`{}`, " ", `{"unknown":true}`, strings.Repeat("x", 1025)} {
+		updater := &fakeSystemUpdater{}
+		router := NewRouterWithOptions(authenticatedRepository(), RouterOptions{Now: func() time.Time { return fixedNow }, SystemUpdater: updater})
+		response := requestSystemUpdate(router, http.MethodGet, "/api/v1/system/update", body, &http.Cookie{Name: sessionCookieName, Value: "authenticated-session"})
+		if response.Code != http.StatusBadRequest || response.Body.String() != `{"error":"invalid update request"}` {
+			t.Fatalf("body=%q status=%d response=%q", body, response.Code, response.Body.String())
+		}
+		if updater.statusCalls != 0 {
+			t.Fatalf("body=%q updater status calls=%d", body, updater.statusCalls)
 		}
 	}
+}
 
+func TestSystemUpdateCheckRejectsNonemptyOrNonObjectJSON(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		`{"unknown":true}`,
+		`{} {}`,
+		`[]`,
+		`null`,
+		strings.Repeat("x", 1025),
+	} {
+		updater := &fakeSystemUpdater{}
+		router := NewRouterWithOptions(authenticatedRepository(), RouterOptions{Now: func() time.Time { return fixedNow }, SystemUpdater: updater})
+		response := requestSystemUpdate(router, http.MethodPost, "/api/v1/system/update/check", body, &http.Cookie{Name: sessionCookieName, Value: "authenticated-session"})
+		if response.Code != http.StatusBadRequest || response.Body.String() != `{"error":"invalid update request"}` {
+			t.Fatalf("body=%q status=%d response=%q", body, response.Code, response.Body.String())
+		}
+		if updater.checkCalls != 0 {
+			t.Fatalf("body=%q updater check calls=%d", body, updater.checkCalls)
+		}
+	}
 }
 
 func TestSystemUpdateStartRejectsUnsafeRequestBodies(t *testing.T) {

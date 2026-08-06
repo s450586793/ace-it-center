@@ -34,5 +34,6 @@ go test ./...
 cd frontend && npm ci && npm test -- --run && npm run build
 ```
 
-向 `main` 推送代码时，GitHub Actions 会运行测试；正式发布会将 `backend`、`web` 和 `updater`
-镜像发布到 GHCR。
+向 `main` 推送代码时，GitHub Actions 会运行测试并发布 backend/web 的 `latest` 与 `sha-*` 镜像；
+updater 在 main 只构建验证，不推送任何 mutable 标签。只有有效的 `vX.Y.Z` release tag 才会发布
+同名的 updater 不可变版本；正式发布的 `stable` promotion 仍只包含 backend/web。

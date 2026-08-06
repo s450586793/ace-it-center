@@ -154,8 +154,60 @@ Backend/Web 的稳定版升级应由 Owner 页面“系统升级”发起：先�
 bash scripts/deploy-dsm.sh
 ```
 
-升级成功但页面显示 `cleanup_pending` 时，先检查镜像引用；确认后只能删除页面显示的 Ace IT Center
-旧 backend/web 镜像，不能使用 prune、强制删除或按名称模糊删除。
+升级成功但页面显示 `cleanup_pending` 时，浏览器只提供安全状态，不会显示镜像 ID 或 rollback alias。
+以下固定提示指向唯一支持的清理流程：
+
+cleanup_pending: follow deploy/README.md using private updater-state/update-state.json; verify exact task original IDs/aliases have no container references, then delete them without force.
+
+在 DSM 项目根目录执行以下命令。它只从权限受限的私有状态文件读取本任务的 `original` 镜像身份，先验证
+固定仓库、canonical task alias、image ID、RepoTags、RepoDigests 和 OCI version，再确认没有任何运行中或
+已停止容器引用。删除命令不使用 force，不输出私有镜像身份；任一校验失败都会立即停止：
+
+```bash
+set -euo pipefail
+state_file="${ACE_DATA_DIR:-.}/updater-state/update-state.json"
+test -f "$state_file"
+jq -e '.task.stage == "succeeded" and .task.cleanup == "pending"' "$state_file" >/dev/null
+task_id="$(jq -er '.task.id' "$state_file")"
+[[ "$task_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+
+inspect_file="$(mktemp)"
+trap 'rm -f "$inspect_file"' EXIT
+chmod 600 "$inspect_file"
+
+for service in backend web; do
+  case "$service" in
+    backend) repository='ghcr.io/s450586793/ace-it-center-backend' ;;
+    web) repository='ghcr.io/s450586793/ace-it-center-web' ;;
+  esac
+  image_id="$(jq -er --arg service "$service" '.task.original[$service].id' "$state_file")"
+  digest="$(jq -er --arg service "$service" '.task.original[$service].digest' "$state_file")"
+  version="$(jq -er --arg service "$service" '.task.original[$service].version' "$state_file")"
+  alias="$(jq -er --arg service "$service" '.task.original[$service].rollback_alias' "$state_file")"
+  recorded_repository="$(jq -er --arg service "$service" '.task.original[$service].repository' "$state_file")"
+  [[ "$recorded_repository" == "$repository" ]]
+  [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "$alias" == "ace-it-center-rollback-${service}:${task_id}" ]]
+
+  sudo docker image inspect "$image_id" >"$inspect_file" 2>/dev/null
+  jq -e --arg id "$image_id" --arg alias "$alias" --arg repository "$repository" \
+    --arg digest "$digest" --arg version "$version" '
+      length == 1 and .[0].Id == $id and
+      ((.[0].RepoTags // []) | index($alias) != null) and
+      ((.[0].RepoTags // []) | all(. == $alias or startswith($repository + ":"))) and
+      ((.[0].RepoDigests // []) | index($repository + "@" + $digest) != null) and
+      .[0].Config.Labels["org.opencontainers.image.version"] == $version
+    ' "$inspect_file" >/dev/null
+  [[ "$(sudo docker image inspect --format '{{.Id}}' "$alias" 2>/dev/null)" == "$image_id" ]]
+  [[ -z "$(sudo docker ps -aq --filter "ancestor=$image_id" 2>/dev/null)" ]]
+
+  sudo docker image rm "$alias" >/dev/null 2>&1
+  sudo docker image rm "$image_id" >/dev/null 2>&1
+done
+```
+
+不要将状态文件内容、镜像 ID 或 alias 粘贴到浏览器、工单或普通日志。不得猜测镜像、使用
+`docker image prune`、`--force` 或按名称模糊删除。
 
 页面显示 `manual_intervention` 时：停止 updater，保留 `updater-state/update-state.json` 和全部新旧镜像；
 检查 backend/web，并先将两者恢复到同一个版本；随后归档受阻的状态文件，再重启 updater。不要删除

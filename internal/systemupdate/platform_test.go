@@ -56,7 +56,14 @@ func TestPlatformRejectsNilContextBeforeExternalIO(t *testing.T) {
 		{name: "deploy rollback", run: func(platform *CLIPlatform) error {
 			return platform.DeployRollback(nil, ServiceBackend, rollbackImagePair(taskID), taskID)
 		}},
+		{name: "inspect rollback", run: func(platform *CLIPlatform) error {
+			_, err := platform.InspectRollbackService(nil, ServiceBackend, cleanupImage(taskID), taskID)
+			return err
+		}},
 		{name: "health", run: func(platform *CLIPlatform) error { return platform.WaitHealthy(nil, ServiceBackend) }},
+		{name: "rollback health", run: func(platform *CLIPlatform) error {
+			return platform.WaitRollbackHealthy(nil, ServiceBackend, cleanupImage(taskID), taskID)
+		}},
 		{name: "cleanup", run: func(platform *CLIPlatform) error { return platform.RemoveOldImage(nil, ServiceBackend, old) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -385,6 +392,101 @@ func TestPlatformDeploysRollbackWithRecordedAliasesOnly(t *testing.T) {
 	}}}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("calls = %#v, want %#v", runner.calls, want)
+	}
+}
+
+func TestPlatformRollbackAliasDeploymentHealthAndInspectionUsePersistedIdentity(t *testing.T) {
+	taskID := "123e4567-e89b-12d3-a456-426614174000"
+	original := cleanupImage(taskID)
+	runner := &fakeCommandRunner{results: append(
+		[]commandResult{{}},
+		append(rollbackServiceInspectResults("healthy", original), rollbackServiceInspectResults("healthy", original)...)...,
+	)}
+	requestCount := 0
+	config := testPlatformConfig(t)
+	config.HTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if request.URL.String() != "http://backend:8080/api/v1/health" {
+			t.Fatalf("health URL = %s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+	})}
+	platform, err := NewCLIPlatform(config, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair := rollbackOriginalPair(taskID)
+
+	if err := platform.DeployRollback(context.Background(), ServiceBackend, pair, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := platform.WaitRollbackHealthy(context.Background(), ServiceBackend, original, taskID); err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := platform.InspectRollbackService(context.Background(), ServiceBackend, original, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected != original || requestCount != 1 {
+		t.Fatalf("inspected = %#v, requests = %d", inspected, requestCount)
+	}
+	overridePath := filepath.Join(platform.config.StateDir, "overrides", taskID+"-rollback.yaml")
+	wantCalls := []commandCall{
+		{name: "docker", args: []string{"compose", "--project-name", "ace-it-center", "--env-file", platform.config.ComposeEnvFile, "-f", platform.config.ComposeFile, "-f", overridePath, "up", "-d", "--no-deps", "--force-recreate", "backend"}},
+		{name: "docker", args: []string{"ps", "-q", "--filter", "label=com.docker.compose.project=ace-it-center", "--filter", "label=com.docker.compose.service=backend"}},
+		{name: "docker", args: []string{"inspect", "container-id"}},
+		{name: "docker", args: []string{"image", "inspect", testOldID}},
+		{name: "docker", args: []string{"ps", "-q", "--filter", "label=com.docker.compose.project=ace-it-center", "--filter", "label=com.docker.compose.service=backend"}},
+		{name: "docker", args: []string{"inspect", "container-id"}},
+		{name: "docker", args: []string{"image", "inspect", testOldID}},
+	}
+	if !reflect.DeepEqual(runner.calls, wantCalls) {
+		t.Fatalf("calls = %#v, want %#v", runner.calls, wantCalls)
+	}
+}
+
+func TestPlatformRollbackInspectionRejectsAliasOrMetadataOutsidePersistedTask(t *testing.T) {
+	taskID := "123e4567-e89b-12d3-a456-426614174000"
+	original := cleanupImage(taskID)
+	validContainer := rollbackContainerInspectJSON("healthy", original)
+	validImage := rollbackImageInspectJSON(original)
+	for _, test := range []struct {
+		name      string
+		expected  Image
+		container string
+		image     string
+		taskID    string
+	}{
+		{name: "wrong task alias", expected: original, container: strings.Replace(validContainer, taskID, "223e4567-e89b-12d3-a456-426614174000", 1), image: validImage, taskID: taskID},
+		{name: "wrong service alias", expected: original, container: strings.Replace(validContainer, "rollback-backend", "rollback-web", 1), image: validImage, taskID: taskID},
+		{name: "running image ID", expected: original, container: strings.Replace(validContainer, testOldID, testTargetID, 1), image: validImage, taskID: taskID},
+		{name: "persisted image ID", expected: Image{Repository: original.Repository, Version: original.Version, Digest: original.Digest, ID: testTargetID, RollbackAlias: original.RollbackAlias}, container: validContainer, image: validImage, taskID: taskID},
+		{name: "alias absent from image", expected: original, container: validContainer, image: strings.Replace(validImage, `"`+original.RollbackAlias+`",`, "", 1), taskID: taskID},
+		{name: "arbitrary local tag", expected: original, container: validContainer, image: strings.Replace(validImage, `"`+original.RollbackAlias+`"`, `"`+original.RollbackAlias+`","local/forged:tag"`, 1), taskID: taskID},
+		{name: "persisted digest", expected: Image{Repository: original.Repository, Version: original.Version, Digest: testTargetDigest, ID: original.ID, RollbackAlias: original.RollbackAlias}, container: validContainer, image: validImage, taskID: taskID},
+		{name: "OCI version", expected: original, container: validContainer, image: strings.Replace(validImage, "v0.4.0", "v0.4.9", 1), taskID: taskID},
+		{name: "noncanonical task", expected: original, container: validContainer, image: validImage, taskID: "123E4567-E89B-12D3-A456-426614174000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeCommandRunner{results: []commandResult{
+				{output: []byte("container-id\n")},
+				{output: []byte(test.container)},
+				{output: []byte(test.image)},
+			}}
+			_, err := newTestPlatform(t, runner).InspectRollbackService(context.Background(), ServiceBackend, test.expected, test.taskID)
+			if err == nil {
+				t.Fatal("InspectRollbackService() accepted untrusted rollback identity")
+			}
+		})
+	}
+}
+
+func TestPlatformNormalInspectionDoesNotTrustTaskAliasWithoutPersistedIdentity(t *testing.T) {
+	taskID := "123e4567-e89b-12d3-a456-426614174000"
+	original := cleanupImage(taskID)
+	runner := &fakeCommandRunner{results: rollbackServiceInspectResults("healthy", original)}
+	if _, err := newTestPlatform(t, runner).InspectService(context.Background(), ServiceBackend); err == nil {
+		t.Fatal("InspectService() trusted a rollback alias without persisted task identity")
 	}
 }
 
@@ -729,6 +831,38 @@ func rollbackImagePair(taskID string) ImagePair {
 		Backend: Image{RollbackAlias: "ace-it-center-rollback-backend:" + taskID},
 		Web:     Image{RollbackAlias: "ace-it-center-rollback-web:" + taskID},
 	}
+}
+
+func rollbackOriginalPair(taskID string) ImagePair {
+	backend := cleanupImage(taskID)
+	web := Image{
+		Repository:    testWebRepo,
+		Version:       "v0.4.0",
+		Digest:        testOldDigest,
+		ID:            testOldID,
+		RollbackAlias: "ace-it-center-rollback-web:" + taskID,
+	}
+	return ImagePair{Backend: backend, Web: web}
+}
+
+func rollbackServiceInspectResults(health string, original Image) []commandResult {
+	return []commandResult{
+		{output: []byte("container-id\n")},
+		{output: []byte(rollbackContainerInspectJSON(health, original))},
+		{output: []byte(rollbackImageInspectJSON(original))},
+	}
+}
+
+func rollbackContainerInspectJSON(health string, original Image) string {
+	healthJSON := ""
+	if health != "" {
+		healthJSON = `"Health":{"Status":"` + health + `"}`
+	}
+	return `[{"Image":"` + original.ID + `","Config":{"Image":"` + original.RollbackAlias + `","Labels":{"com.docker.compose.project":"ace-it-center","com.docker.compose.service":"backend"}},"State":{` + healthJSON + `}}]`
+}
+
+func rollbackImageInspectJSON(original Image) string {
+	return `[{"Id":"` + original.ID + `","RepoTags":["` + original.RollbackAlias + `","` + original.Repository + `:stable"],"RepoDigests":["` + original.Repository + `@` + original.Digest + `"],"Config":{"Labels":{"org.opencontainers.image.version":"` + original.Version + `"}}}]`
 }
 
 func assertOverrideFile(t *testing.T, path string, wantImages map[string]string) {

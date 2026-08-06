@@ -280,7 +280,12 @@ run_failure "$unrelated_backup" env ACE_CONFIRM_SYSTEM_UPDATE=yes FAKE_SKIP_BACK
 pending="$test_root/pending"
 pending_output="$(run_smoke "$pending" env ACE_CONFIRM_SYSTEM_UPDATE=yes FAKE_CLEANUP=pending 2>&1)" || fail "cleanup-pending smoke command failed"
 assert_secret_free "$pending_output"
-[[ "$pending_output" == *"cleanup_pending: inspect references and remove only the displayed Ace IT Center old image after confirmation."* ]] || fail "cleanup-pending instruction changed"
+cleanup_instruction='cleanup_pending: follow deploy/README.md using private updater-state/update-state.json; verify exact task original IDs/aliases have no container references, then delete them without force.'
+[[ "$pending_output" == *"$cleanup_instruction"* ]] || fail "cleanup-pending instruction changed"
+grep -Fqx "$cleanup_instruction" "$root/deploy/README.md" || fail "cleanup-pending documentation and smoke instruction differ"
+for private_value in sha256:postgres sha256:updater ace-it-center-rollback-backend ace-it-center-rollback-web; do
+  [[ "$pending_output" != *"$private_value"* ]] || fail "cleanup-pending output leaked private image identity"
+done
 
 bounded="$test_root/bounded"
 run_failure "$bounded" env ACE_CONFIRM_SYSTEM_UPDATE=yes FAKE_POLL_MODE=checking FAKE_STATUS_ADVANCE=300

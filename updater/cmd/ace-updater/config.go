@@ -77,7 +77,7 @@ func (config UpdaterConfig) validate() error {
 	if !pathUnder("/state", config.StateFile) {
 		return errors.New("ACE_UPDATER_STATE_FILE must be under /state")
 	}
-	if !pathUnder("/backups", config.BackupDir) {
+	if !pathAtOrUnder("/backups", config.BackupDir) {
 		return errors.New("ACE_UPDATER_BACKUP_DIR must be under /backups")
 	}
 	if config.BackendRepository != fixedBackendRepository {
@@ -120,4 +120,12 @@ func pathUnder(root, path string) bool {
 	}
 	relative, err := filepath.Rel(root, filepath.Clean(path))
 	return err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func pathAtOrUnder(root, path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	relative, err := filepath.Rel(root, filepath.Clean(path))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

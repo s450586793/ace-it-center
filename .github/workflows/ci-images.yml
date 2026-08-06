@@ -89,10 +89,13 @@ jobs:
         include:
           - target: backend
             image: ace-it-center-backend
+            push_on_main: true
           - target: web
             image: ace-it-center-web
+            push_on_main: true
           - target: updater
             image: ace-it-center-updater
+            push_on_main: false
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -113,9 +116,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && matrix.push_on_main }}
             type=raw,value=${{ github.ref_name }},enable=${{ needs.release-tag.outputs.is_release_tag == 'true' }}
-            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' && matrix.push_on_main }}
 
       - name: Build and publish image
         uses: docker/build-push-action@v6
@@ -123,7 +126,7 @@ jobs:
           context: .
           target: ${{ matrix.target }}
           platforms: linux/amd64
-          push: true
+          push: ${{ needs.release-tag.outputs.is_release_tag == 'true' || (github.ref == 'refs/heads/main' && matrix.push_on_main) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.target }}

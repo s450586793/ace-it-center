@@ -4,7 +4,7 @@ set -euo pipefail
 
 readonly max_polls=300
 readonly max_duration_seconds=600
-readonly cleanup_pending_instruction='cleanup_pending: inspect references and remove only the displayed Ace IT Center old image after confirmation.'
+readonly cleanup_pending_instruction='cleanup_pending: follow deploy/README.md using private updater-state/update-state.json; verify exact task original IDs/aliases have no container references, then delete them without force.'
 
 fail() {
   printf 'error: system update smoke check failed\n' >&2

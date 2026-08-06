@@ -121,11 +121,17 @@ func (manager *Manager) Status() StatusView {
 func (manager *Manager) Check(ctx context.Context) (StatusView, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	result, err := manager.checker.Check(ctx)
+	state, err := manager.store.Load()
 	if err != nil {
 		return StatusView{}, err
 	}
-	state, err := manager.store.Load()
+	checker := manager.checker
+	if state.Task != nil && hasRollbackImages(state.Task.Original) {
+		checkerCopy := *manager.checker
+		checkerCopy.runtime = taskAwareRuntime{platform: manager.platform, task: *state.Task}
+		checker = &checkerCopy
+	}
+	result, err := checker.Check(ctx)
 	if err != nil {
 		return StatusView{}, err
 	}
@@ -338,13 +344,19 @@ func (manager *Manager) Recover(ctx context.Context) error {
 	}
 	task := *state.Task
 
-	actualBackend, err := manager.platform.InspectService(ctx, ServiceBackend)
+	actualBackend, err := manager.inspectRecoveryService(ctx, ServiceBackend, task)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		manager.logFailure(task, "state_invalid", err)
 		return manager.markManualIntervention(&task, "state_invalid")
 	}
-	actualWeb, err := manager.platform.InspectService(ctx, ServiceWeb)
+	actualWeb, err := manager.inspectRecoveryService(ctx, ServiceWeb, task)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		manager.logFailure(task, "state_invalid", err)
 		return manager.markManualIntervention(&task, "state_invalid")
 	}
@@ -375,6 +387,30 @@ func (manager *Manager) Recover(ctx context.Context) error {
 	default:
 		return manager.markManualIntervention(&task, "state_invalid")
 	}
+}
+
+func (manager *Manager) inspectRecoveryService(ctx context.Context, service ServiceName, task Task) (Image, error) {
+	return (taskAwareRuntime{platform: manager.platform, task: task}).InspectService(ctx, service)
+}
+
+type taskAwareRuntime struct {
+	platform Platform
+	task     Task
+}
+
+func (runtime taskAwareRuntime) InspectService(ctx context.Context, service ServiceName) (Image, error) {
+	actual, err := runtime.platform.InspectService(ctx, service)
+	if err == nil {
+		return actual, nil
+	}
+	expected := runtime.task.Original.Backend
+	if service == ServiceWeb {
+		expected = runtime.task.Original.Web
+	}
+	if expected.RollbackAlias == "" {
+		return Image{}, err
+	}
+	return runtime.platform.InspectRollbackService(ctx, service, expected, runtime.task.ID)
 }
 
 func imagePairMatches(actual, expected ImagePair) bool {
@@ -453,6 +489,9 @@ func (manager *Manager) perform(task *Task, stage Stage, action func() error) er
 
 func (manager *Manager) handleFailure(task *Task, code string, shouldRollback bool, cause error) {
 	manager.logFailure(*task, code, cause)
+	if manager.rootContext.Err() != nil {
+		return
+	}
 	if shouldRollback {
 		if err := manager.rollback(manager.rootContext, task, code); err != nil {
 			manager.logFailure(*task, "rollback_failed", err)
@@ -477,14 +516,21 @@ func (manager *Manager) rollback(ctx context.Context, task *Task, code string) e
 
 	var rollbackErr error
 	for _, service := range []ServiceName{ServiceBackend, ServiceWeb} {
+		expected := task.Original.Backend
+		if service == ServiceWeb {
+			expected = task.Original.Web
+		}
 		if err := manager.platform.DeployRollback(ctx, service, task.Original, task.ID); err != nil && rollbackErr == nil {
 			rollbackErr = err
 		}
-		if err := manager.platform.WaitHealthy(ctx, service); err != nil && rollbackErr == nil {
+		if err := manager.platform.WaitRollbackHealthy(ctx, service, expected, task.ID); err != nil && rollbackErr == nil {
 			rollbackErr = err
 		}
 	}
 	if rollbackErr != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		manager.logFailure(*task, "rollback_failed", rollbackErr)
 		return manager.markManualIntervention(task, "rollback_failed")
 	}
@@ -556,7 +602,7 @@ func statusView(state PersistentState) StatusView {
 		view.Current = versionPairView(state.LastCheck.Current)
 		view.Latest = &ReleaseView{
 			VersionPairView: versionPairView(state.LastCheck.Target),
-			PublishedAt:     state.LastCheck.Target.Backend.PublishedAt,
+			PublishedAt:     laterTime(state.LastCheck.Target.Backend.PublishedAt, state.LastCheck.Target.Web.PublishedAt),
 		}
 		view.UpdateAvailable = state.LastCheck.Available
 		checkedAt := state.LastCheck.CheckedAt
@@ -565,8 +611,21 @@ func statusView(state PersistentState) StatusView {
 	if state.Task != nil {
 		task := publicTaskView(*state.Task)
 		view.Task = &task
+		if !state.Task.Stage.Terminal() || state.Task.Stage == StageManualIntervention {
+			view.UpdateAvailable = false
+		}
 	}
 	return view
+}
+
+func laterTime(first, second *time.Time) *time.Time {
+	if first == nil {
+		return second
+	}
+	if second == nil || first.After(*second) {
+		return first
+	}
+	return second
 }
 
 func versionPairView(pair ImagePair) VersionPairView {

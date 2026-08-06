@@ -46,7 +46,13 @@ function mountUpdate() {
 
 describe('SystemUpdate', () => {
   beforeEach(() => {
-    vi.mocked(apiRequest).mockResolvedValue(status())
+    vi.mocked(apiRequest).mockImplementation((path, options) => {
+      if (path === '/api/v1/system/update' && !options?.method) {
+        return Promise.resolve(status({ latest: undefined, update_available: false }))
+      }
+      if (path === '/api/v1/system/update/check') return Promise.resolve(status())
+      throw new Error(`unexpected request: ${path}`)
+    })
   })
 
   afterEach(() => {
@@ -54,15 +60,85 @@ describe('SystemUpdate', () => {
     vi.mocked(apiRequest).mockReset()
   })
 
-  it('checks the public update status on mount and renders compact public versions', async () => {
+  it('recovers persisted status before checking with the exact empty object', async () => {
     const wrapper = mountUpdate()
     await flushPromises()
 
+    expect(apiRequest).toHaveBeenNthCalledWith(1, '/api/v1/system/update')
+    expect(apiRequest).toHaveBeenNthCalledWith(2, '/api/v1/system/update/check', { method: 'POST', body: '{}' })
     expect(apiRequest).toHaveBeenCalledWith('/api/v1/system/update/check', { method: 'POST', body: '{}' })
     expect(wrapper.get('[data-version="current"]').text()).toContain('v0.4.0')
     expect(wrapper.get('[data-version="latest"]').text()).toContain('v0.4.1')
     expect(wrapper.text()).toContain(new Date(latest.published_at).toLocaleString('zh-CN', { hour12: false }))
     expect(wrapper.text()).not.toContain('sha256:')
+    wrapper.unmount()
+  })
+
+  it('renders and polls a persisted active task without posting Check', async () => {
+    vi.useFakeTimers()
+    vi.mocked(apiRequest).mockResolvedValue(activeStatus())
+    const wrapper = mountUpdate()
+    await flushPromises()
+
+    expect(apiRequest).toHaveBeenCalledTimes(1)
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/system/update')
+    expect(wrapper.get('[data-stage="current"]').text()).toContain('正在拉取升级包')
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(apiRequest).mock.calls.some(([path, options]) => path === '/api/v1/system/update/check' || options?.method === 'POST')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('renders persisted manual intervention without Check or polling', async () => {
+    vi.useFakeTimers()
+    vi.mocked(apiRequest).mockResolvedValue(status({ task: {
+      id: 'update-1', from: current, to: latest, stage: 'manual_intervention', created_at: '2026-08-06T08:01:00Z',
+      rolled_back: false, cleanup: 'not_run',
+    } }))
+    const wrapper = mountUpdate()
+    await flushPromises()
+
+    expect(apiRequest).toHaveBeenCalledTimes(1)
+    expect(apiRequest).toHaveBeenCalledWith('/api/v1/system/update')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(apiRequest).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it.each([
+    new APIError(502, 'bad gateway'),
+    new APIError(503, 'service unavailable'),
+    new TypeError('network disconnected'),
+  ])('retries initial persisted status failures after 2, 4, and 5 seconds: %s', async firstError => {
+    vi.useFakeTimers()
+    vi.mocked(apiRequest)
+      .mockRejectedValueOnce(firstError)
+      .mockRejectedValueOnce(new APIError(503, 'service unavailable'))
+      .mockRejectedValueOnce(new TypeError('network disconnected'))
+      .mockResolvedValueOnce(status({ latest: undefined, update_available: false }))
+      .mockResolvedValueOnce(status())
+    const wrapper = mountUpdate()
+    await flushPromises()
+
+    expect(apiRequest).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(apiRequest).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(apiRequest).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(apiRequest).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledTimes(5)
+    expect(apiRequest).toHaveBeenNthCalledWith(4, '/api/v1/system/update')
+    expect(apiRequest).toHaveBeenNthCalledWith(5, '/api/v1/system/update/check', { method: 'POST', body: '{}' })
     wrapper.unmount()
   })
 
@@ -80,6 +156,7 @@ describe('SystemUpdate', () => {
   it('opens an exact version confirmation and starts an available matching release only once', async () => {
     let resolveStart: ((value: unknown) => void) | undefined
     vi.mocked(apiRequest).mockImplementation((path, options) => {
+      if (path === '/api/v1/system/update' && !options?.method) return Promise.resolve(status({ latest: undefined, update_available: false }))
       if (path === '/api/v1/system/update/check') return Promise.resolve(status())
       if (path === '/api/v1/system/update' && options?.method === 'POST') {
         return new Promise<unknown>(resolve => { resolveStart = resolve }) as Promise<never>
@@ -99,7 +176,7 @@ describe('SystemUpdate', () => {
     expect(apiRequest).toHaveBeenCalledWith('/api/v1/system/update', {
       method: 'POST', body: JSON.stringify({ target_version: 'v0.4.1' }),
     })
-    expect(apiRequest).toHaveBeenCalledTimes(2)
+    expect(apiRequest).toHaveBeenCalledTimes(3)
 
     resolveStart?.({
       id: 'update-1', from: current, to: latest, stage: 'checking',
@@ -200,8 +277,10 @@ describe('SystemUpdate', () => {
   it('does not schedule another poll when an in-flight request resolves after unmount', async () => {
     vi.useFakeTimers()
     let resolvePoll: ((value: unknown) => void) | undefined
-    vi.mocked(apiRequest).mockImplementation(path => {
-      if (path === '/api/v1/system/update/check') return Promise.resolve(activeStatus())
+    let calls = 0
+    vi.mocked(apiRequest).mockImplementation(() => {
+      calls++
+      if (calls === 1) return Promise.resolve(activeStatus())
       return new Promise<unknown>(resolve => { resolvePoll = resolve }) as Promise<never>
     })
     const wrapper = mountUpdate()
@@ -245,15 +324,10 @@ describe('SystemUpdate', () => {
   })
 
   it('renders fixed DSM cleanup and recovery guidance without task error details', async () => {
-    const wrapper = mountUpdate()
-    vi.mocked(apiRequest).mockResolvedValueOnce(status({ task: {
+    vi.mocked(apiRequest).mockResolvedValue(status({ task: {
       id: 'update-1', from: current, to: latest, stage: 'succeeded', created_at: '2026-08-06T08:01:00Z',
       rolled_back: false, cleanup: 'pending', error_code: 'cleanup_pending', error_message: 'sha256:secret token /srv/alias',
     } }))
-    await wrapper.vm.$nextTick()
-    await flushPromises()
-    wrapper.unmount()
-
     const cleanup = mountUpdate()
     await flushPromises()
     expect(cleanup.text()).toContain('DSM')

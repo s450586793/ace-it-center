@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-yaml"
 )
 
 func TestLoadUpdaterConfigAcceptsRequiredFixedConfiguration(t *testing.T) {
@@ -23,6 +25,35 @@ func TestLoadUpdaterConfigAcceptsRequiredFixedConfiguration(t *testing.T) {
 	}
 	if config.StateFile != "/state/update-state.json" || config.BackupDir != "/backups/updates" {
 		t.Fatalf("state paths = %#v", config)
+	}
+}
+
+func TestLoadUpdaterConfigAcceptsComposeBackupVolumeRoot(t *testing.T) {
+	contents, err := os.ReadFile(filepath.Join("..", "..", "..", "compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(contents, &compose); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := compose.Services["updater"].Environment["ACE_UPDATER_BACKUP_DIR"]
+	if backupDir != "/backups" {
+		t.Fatalf("Compose ACE_UPDATER_BACKUP_DIR = %q, want /backups", backupDir)
+	}
+
+	setValidUpdaterEnvironment(t)
+	t.Setenv("ACE_UPDATER_BACKUP_DIR", backupDir)
+	config, err := LoadUpdaterConfig()
+	if err != nil {
+		t.Fatalf("LoadUpdaterConfig() rejected Compose backup root: %v", err)
+	}
+	if config.BackupDir != "/backups" {
+		t.Fatalf("BackupDir = %q, want /backups", config.BackupDir)
 	}
 }
 
@@ -46,7 +77,7 @@ func TestLoadUpdaterConfigRejectsUnsafeOrIncompleteValues(t *testing.T) {
 		{name: "state outside state volume", key: "ACE_UPDATER_STATE_FILE", value: "/state-other/update-state.json"},
 		{name: "state volume root", key: "ACE_UPDATER_STATE_FILE", value: "/state"},
 		{name: "backup outside backup volume", key: "ACE_UPDATER_BACKUP_DIR", value: "/backups-other"},
-		{name: "backup volume root", key: "ACE_UPDATER_BACKUP_DIR", value: "/backups"},
+		{name: "backup similar prefix", key: "ACE_UPDATER_BACKUP_DIR", value: "/backups-malicious/updates"},
 		{name: "wrong backend repository", key: "ACE_BACKEND_IMAGE", value: "ghcr.io/example/backend"},
 		{name: "wrong web repository", key: "ACE_WEB_IMAGE", value: "ghcr.io/example/web"},
 		{name: "missing password", key: "PGPASSWORD", remove: true},

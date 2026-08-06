@@ -40,7 +40,7 @@ func (s *server) systemUpdateStatus(c *gin.Context) {
 }
 
 func (s *server) checkSystemUpdate(c *gin.Context) {
-	if hasSystemUpdateRequestBody(c.Request.Body) {
+	if invalidSystemUpdateCheckBody(c.Request.Body) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid update request"})
 		return
 	}
@@ -54,6 +54,26 @@ func (s *server) checkSystemUpdate(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, status)
+}
+
+func invalidSystemUpdateCheckBody(body io.Reader) bool {
+	if body == nil {
+		return false
+	}
+	encoded, err := io.ReadAll(io.LimitReader(body, maxSystemUpdateRequestBytes+1))
+	if err != nil || int64(len(encoded)) > maxSystemUpdateRequestBytes {
+		return true
+	}
+	if len(encoded) == 0 {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	var object map[string]json.RawMessage
+	if err := decoder.Decode(&object); err != nil || object == nil || len(object) != 0 {
+		return true
+	}
+	var extra any
+	return !errors.Is(decoder.Decode(&extra), io.EOF)
 }
 
 func (s *server) startSystemUpdate(c *gin.Context) {

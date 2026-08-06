@@ -49,12 +49,14 @@ type PlatformConfig struct {
 
 type Platform interface {
 	RunningImageReader
+	InspectRollbackService(context.Context, ServiceName, Image, string) (Image, error)
 	CreateRollbackAlias(context.Context, ServiceName, Image, string) (Image, error)
 	BackupDatabase(context.Context, string) (string, error)
 	PullTarget(context.Context, ServiceName, Image) error
 	DeployTarget(context.Context, ServiceName, ImagePair, string) error
 	DeployRollback(context.Context, ServiceName, ImagePair, string) error
 	WaitHealthy(context.Context, ServiceName) error
+	WaitRollbackHealthy(context.Context, ServiceName, Image, string) error
 	RemoveOldImage(context.Context, ServiceName, Image) error
 }
 
@@ -107,6 +109,17 @@ func (platform *CLIPlatform) InspectService(ctx context.Context, service Service
 		return Image{}, err
 	}
 	metadata, err := platform.inspectService(ctx, service)
+	if err != nil {
+		return Image{}, err
+	}
+	return metadata.image, nil
+}
+
+func (platform *CLIPlatform) InspectRollbackService(ctx context.Context, service ServiceName, expected Image, taskID string) (Image, error) {
+	if err := requireContext(ctx); err != nil {
+		return Image{}, err
+	}
+	metadata, err := platform.inspectRollbackService(ctx, service, expected, taskID)
 	if err != nil {
 		return Image{}, err
 	}
@@ -250,7 +263,7 @@ func (platform *CLIPlatform) DeployRollback(ctx context.Context, service Service
 		return err
 	}
 	parsedTaskID, err := uuid.Parse(taskID)
-	if err != nil {
+	if err != nil || parsedTaskID.String() != taskID {
 		return errors.New("rollback deployment task ID is invalid")
 	}
 	normalizedTaskID := parsedTaskID.String()
@@ -279,6 +292,24 @@ func (platform *CLIPlatform) WaitHealthy(ctx context.Context, service ServiceNam
 	if _, err := platform.repositoryFor(service); err != nil {
 		return err
 	}
+	return platform.waitHealthy(ctx, service, func(checkContext context.Context) (serviceMetadata, error) {
+		return platform.inspectService(checkContext, service)
+	})
+}
+
+func (platform *CLIPlatform) WaitRollbackHealthy(ctx context.Context, service ServiceName, expected Image, taskID string) error {
+	if err := requireContext(ctx); err != nil {
+		return err
+	}
+	if err := platform.validateRollbackIdentity(service, expected, taskID); err != nil {
+		return err
+	}
+	return platform.waitHealthy(ctx, service, func(checkContext context.Context) (serviceMetadata, error) {
+		return platform.inspectRollbackService(checkContext, service, expected, taskID)
+	})
+}
+
+func (platform *CLIPlatform) waitHealthy(ctx context.Context, service ServiceName, inspect func(context.Context) (serviceMetadata, error)) error {
 	healthURL := platform.config.BackendHealthURL
 	if service == ServiceWeb {
 		healthURL = platform.config.WebHealthURL
@@ -286,7 +317,7 @@ func (platform *CLIPlatform) WaitHealthy(ctx context.Context, service ServiceNam
 	checkContext, cancel := context.WithTimeout(ctx, platform.config.HealthTimeout)
 	defer cancel()
 	for {
-		metadata, err := platform.inspectService(checkContext, service)
+		metadata, err := inspect(checkContext)
 		if err == nil && metadata.healthStatus == "healthy" && platform.httpHealthy(checkContext, healthURL) {
 			return nil
 		}
@@ -537,6 +568,30 @@ func (platform *CLIPlatform) inspectService(ctx context.Context, service Service
 	if err != nil {
 		return serviceMetadata{}, err
 	}
+	return platform.inspectServiceWith(ctx, service, func(reference string) bool {
+		return referenceUsesRepository(reference, repository)
+	}, func(output []byte, expectedID string) (Image, error) {
+		return parseImageInspect(output, repository, expectedID)
+	})
+}
+
+func (platform *CLIPlatform) inspectRollbackService(ctx context.Context, service ServiceName, expected Image, taskID string) (serviceMetadata, error) {
+	if err := platform.validateRollbackIdentity(service, expected, taskID); err != nil {
+		return serviceMetadata{}, err
+	}
+	return platform.inspectServiceWith(ctx, service, func(reference string) bool {
+		return reference == expected.RollbackAlias
+	}, func(output []byte, expectedID string) (Image, error) {
+		return parseRollbackImageInspect(output, expected, expectedID)
+	})
+}
+
+func (platform *CLIPlatform) inspectServiceWith(
+	ctx context.Context,
+	service ServiceName,
+	validReference func(string) bool,
+	parseImage func([]byte, string) (Image, error),
+) (serviceMetadata, error) {
 	output, err := platform.runner.Run(ctx, nil, "docker", "ps", "-q",
 		"--filter", "label=com.docker.compose.project="+fixedProjectName,
 		"--filter", "label=com.docker.compose.service="+string(service),
@@ -561,7 +616,7 @@ func (platform *CLIPlatform) inspectService(ctx context.Context, service Service
 	if !sha256Pattern.MatchString(container.Image) ||
 		container.Config.Labels["com.docker.compose.project"] != fixedProjectName ||
 		container.Config.Labels["com.docker.compose.service"] != string(service) ||
-		!referenceUsesRepository(container.Config.Image, repository) {
+		!validReference(container.Config.Image) {
 		return serviceMetadata{}, errors.New("untrusted compose container metadata")
 	}
 
@@ -569,7 +624,7 @@ func (platform *CLIPlatform) inspectService(ctx context.Context, service Service
 	if err != nil {
 		return serviceMetadata{}, errors.New("inspect service image")
 	}
-	image, err := parseImageInspect(output, repository, container.Image)
+	image, err := parseImage(output, container.Image)
 	if err != nil {
 		return serviceMetadata{}, err
 	}
@@ -578,6 +633,24 @@ func (platform *CLIPlatform) inspectService(ctx context.Context, service Service
 		healthStatus = container.State.Health.Status
 	}
 	return serviceMetadata{image: image, healthStatus: healthStatus}, nil
+}
+
+func (platform *CLIPlatform) validateRollbackIdentity(service ServiceName, expected Image, taskID string) error {
+	repository, err := platform.repositoryFor(service)
+	if err != nil {
+		return err
+	}
+	parsedTaskID, err := uuid.Parse(taskID)
+	if err != nil || parsedTaskID.String() != taskID {
+		return errors.New("rollback task identity is invalid")
+	}
+	wantAlias := fixedProjectName + "-rollback-" + string(service) + ":" + taskID
+	if expected.Repository != repository || expected.RollbackAlias != wantAlias ||
+		!sha256Pattern.MatchString(expected.ID) || !sha256Pattern.MatchString(expected.Digest) ||
+		ValidateVersion(expected.Version) != nil {
+		return errors.New("rollback image identity is invalid")
+	}
+	return nil
 }
 
 func parseImageInspect(output []byte, repository, expectedID string) (Image, error) {
@@ -611,6 +684,45 @@ func parseImageInspect(output []byte, repository, expectedID string) (Image, err
 		return Image{}, errors.New("service image metadata is incomplete")
 	}
 	return Image{Repository: repository, Version: version, Digest: digest, ID: inspected.ID}, nil
+}
+
+func parseRollbackImageInspect(output []byte, expected Image, expectedID string) (Image, error) {
+	var images []imageInspect
+	if json.Unmarshal(output, &images) != nil || len(images) != 1 {
+		return Image{}, errors.New("invalid rollback image metadata")
+	}
+	inspected := images[0]
+	if expectedID != expected.ID || inspected.ID != expected.ID || !sha256Pattern.MatchString(inspected.ID) {
+		return Image{}, errors.New("rollback image ID is invalid")
+	}
+	foundAlias := false
+	for _, tag := range inspected.RepoTags {
+		if tag == expected.RollbackAlias {
+			foundAlias = true
+			continue
+		}
+		if !referenceUsesRepository(tag, expected.Repository) {
+			return Image{}, errors.New("rollback image tag is unexpected")
+		}
+	}
+	if !foundAlias {
+		return Image{}, errors.New("rollback image alias is missing")
+	}
+	wantDigest := expected.Repository + "@" + expected.Digest
+	foundDigest := false
+	for _, reference := range inspected.RepoDigests {
+		prefix := expected.Repository + "@"
+		if !strings.HasPrefix(reference, prefix) || !sha256Pattern.MatchString(strings.TrimPrefix(reference, prefix)) {
+			return Image{}, errors.New("rollback image digest is unexpected")
+		}
+		if reference == wantDigest {
+			foundDigest = true
+		}
+	}
+	if !foundDigest || inspected.Config.Labels["org.opencontainers.image.version"] != expected.Version {
+		return Image{}, errors.New("rollback image metadata does not match persisted identity")
+	}
+	return expected, nil
 }
 
 func (platform *CLIPlatform) repositoryFor(service ServiceName) (string, error) {

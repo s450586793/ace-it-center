@@ -69,17 +69,62 @@ function clearPollTimer() {
   }
 }
 
-function schedulePoll(delay = retryDelay) {
+function scheduleRequest(request: () => Promise<void>, delay: number, requireActiveTask: boolean) {
   clearPollTimer()
-  if (!mounted || sessionExpired || !activeTask.value) return
-  pollTimer = window.setTimeout(() => { void refreshStatus(false) }, delay)
+  if (!mounted || sessionExpired || (requireActiveTask && !activeTask.value)) return
+  pollTimer = window.setTimeout(() => { void request() }, delay)
 }
 
-async function refreshStatus(check: boolean) {
+function schedulePoll(delay = retryDelay) {
+  scheduleRequest(() => refreshStatus(false), delay, true)
+}
+
+function scheduleInitialRetry(request: () => Promise<void>) {
+  const delay = retryDelay
+  retryDelay = Math.min(retryDelay * 2, 5_000)
+  scheduleRequest(request, delay, false)
+}
+
+async function recoverPersistedStatus() {
   if (checkBusy.value) return
   checkBusy.value = true
   safeNotice.value = ''
   let shouldPoll = false
+  let shouldCheck = false
+  let shouldRetry = false
+  try {
+    status.value = await apiRequest<SystemUpdateStatus>('/api/v1/system/update')
+    retryDelay = 2_000
+    shouldPoll = activeTask.value
+    shouldCheck = !activeTask.value && !blockedTask.value
+  } catch (requestError) {
+    if (isUnauthorized(requestError)) {
+      sessionExpired = true
+      clearPollTimer()
+      emit('session-expired')
+      return
+    }
+    if (isRetryablePollingError(requestError)) {
+      shouldRetry = true
+    } else {
+      safeNotice.value = '暂时无法检查升级状态，请稍后重试。'
+    }
+  } finally {
+    checkBusy.value = false
+    if (shouldPoll) schedulePoll()
+    if (shouldRetry) scheduleInitialRetry(recoverPersistedStatus)
+  }
+  if (shouldCheck && mounted && !sessionExpired) {
+    await refreshStatus(true, true)
+  }
+}
+
+async function refreshStatus(check: boolean, retryWithoutTask = false) {
+  if (checkBusy.value) return
+  checkBusy.value = true
+  safeNotice.value = ''
+  let shouldPoll = false
+  let shouldRetryCheck = false
   try {
     status.value = check
       ? await apiRequest<SystemUpdateStatus>('/api/v1/system/update/check', { method: 'POST', body: '{}' })
@@ -96,12 +141,15 @@ async function refreshStatus(check: boolean) {
     if (activeTask.value && isRetryablePollingError(requestError)) {
       retryDelay = Math.min(retryDelay * 2, 5_000)
       shouldPoll = true
+    } else if (retryWithoutTask && isRetryablePollingError(requestError)) {
+      shouldRetryCheck = true
     } else {
       safeNotice.value = '暂时无法检查升级状态，请稍后重试。'
     }
   } finally {
     checkBusy.value = false
     if (shouldPoll) schedulePoll()
+    if (shouldRetryCheck) scheduleInitialRetry(() => refreshStatus(true, true))
   }
 }
 
@@ -154,7 +202,7 @@ function stageIsComplete(stage: SystemUpdateStage | undefined, item: SystemUpdat
 onMounted(() => {
   mounted = true
   sessionExpired = false
-  void refreshStatus(true)
+  void recoverPersistedStatus()
 })
 
 onBeforeUnmount(() => {
