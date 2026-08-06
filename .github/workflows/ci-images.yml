@@ -148,9 +148,10 @@ jobs:
 
       - name: Promote release images to stable
         run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
           docker buildx imagetools create \
-            --tag ghcr.io/${GITHUB_REPOSITORY_OWNER}/ace-it-center-backend:stable \
-            ghcr.io/${GITHUB_REPOSITORY_OWNER}/ace-it-center-backend:${GITHUB_REF_NAME}
+            --tag ghcr.io/${owner}/ace-it-center-backend:stable \
+            ghcr.io/${owner}/ace-it-center-backend:${GITHUB_REF_NAME}
           docker buildx imagetools create \
-            --tag ghcr.io/${GITHUB_REPOSITORY_OWNER}/ace-it-center-web:stable \
-            ghcr.io/${GITHUB_REPOSITORY_OWNER}/ace-it-center-web:${GITHUB_REF_NAME}
+            --tag ghcr.io/${owner}/ace-it-center-web:stable \
+            ghcr.io/${owner}/ace-it-center-web:${GITHUB_REF_NAME}
