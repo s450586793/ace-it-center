@@ -21,13 +21,15 @@ services:
       - internal
 
   backend:
-    image: ${ACE_BACKEND_IMAGE:-ghcr.io/s450586793/ace-it-center-backend}:${ACE_IMAGE_TAG:-latest}
+    image: ${ACE_BACKEND_IMAGE:-ghcr.io/s450586793/ace-it-center-backend}:${ACE_IMAGE_TAG:-stable}
     pull_policy: always
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-ace}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ace_it_center}?sslmode=disable
       LISTEN_ADDR: :8080
       ACE_SECURE_COOKIES: ${ACE_SECURE_COOKIES:-false}
+      ACE_UPDATER_URL: http://updater:8090
+      ACE_UPDATER_TOKEN: ${ACE_UPDATER_TOKEN:?ACE_UPDATER_TOKEN is required}
       TZ: ${TZ:-Asia/Shanghai}
     depends_on:
       postgres:
@@ -42,7 +44,7 @@ services:
       - internal
 
   web:
-    image: ${ACE_WEB_IMAGE:-ghcr.io/s450586793/ace-it-center-web}:${ACE_IMAGE_TAG:-latest}
+    image: ${ACE_WEB_IMAGE:-ghcr.io/s450586793/ace-it-center-web}:${ACE_IMAGE_TAG:-stable}
     pull_policy: always
     restart: unless-stopped
     ports:
@@ -58,6 +60,46 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    networks:
+      - internal
+
+  updater:
+    image: ${ACE_UPDATER_IMAGE:-ghcr.io/s450586793/ace-it-center-updater}:${ACE_UPDATER_IMAGE_TAG:?ACE_UPDATER_IMAGE_TAG is required}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      ACE_UPDATER_TOKEN: ${ACE_UPDATER_TOKEN:?ACE_UPDATER_TOKEN is required}
+      ACE_COMPOSE_PROJECT: ace-it-center
+      ACE_COMPOSE_FILE: /config/compose.yaml
+      ACE_COMPOSE_ENV_FILE: /config/.env
+      ACE_UPDATER_STATE_FILE: /state/update-state.json
+      ACE_UPDATER_BACKUP_DIR: /backups
+      ACE_BACKEND_IMAGE: ${ACE_BACKEND_IMAGE:-ghcr.io/s450586793/ace-it-center-backend}
+      ACE_WEB_IMAGE: ${ACE_WEB_IMAGE:-ghcr.io/s450586793/ace-it-center-web}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-ace_it_center}
+      PGUSER: ${POSTGRES_USER:-ace}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ACE_DATA_DIR:-.}/compose.yaml:/config/compose.yaml:ro
+      - ${ACE_DATA_DIR:-.}/.env:/config/.env:ro
+      - ${ACE_DATA_DIR:-.}/updater-state:/state
+      - ${ACE_DATA_DIR:-.}/backups:/backups
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - internal
 

@@ -21,6 +21,14 @@ ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/ace-it-center ./backend/cmd/server
 
+FROM go-base AS updater-builder
+COPY updater ./updater
+COPY internal ./internal
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/ace-updater ./updater/cmd/ace-updater
+
 FROM go-base AS agent-builder
 COPY agent ./agent
 COPY internal ./internal
@@ -52,3 +60,14 @@ COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=frontend-builder /src/frontend/dist /usr/share/nginx/html
 COPY --from=agent-builder /out /usr/share/nginx/html/downloads
 EXPOSE 80
+
+FROM alpine:3.22 AS updater
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    docker-cli \
+    docker-cli-compose \
+    postgresql16-client
+COPY --from=updater-builder /out/ace-updater /usr/local/bin/ace-updater
+EXPOSE 8090
+ENTRYPOINT ["/usr/local/bin/ace-updater"]
