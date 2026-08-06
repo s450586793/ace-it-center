@@ -5,7 +5,15 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 smoke="$root/scripts/system-update-dsm-smoke.sh"
 test_root="$(mktemp -d)"
-trap 'rm -rf "$test_root"' EXIT
+
+cleanup_test_root() {
+  if [[ -n "${cleanup_state_file:-}" ]]; then
+    sudo -n rm -f "$cleanup_state_file" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$test_root"
+}
+
+trap cleanup_test_root EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -15,6 +23,7 @@ fail() {
 [[ -x "$smoke" ]] || fail "smoke script is missing"
 
 real_jq="$(command -v jq 2>/dev/null)" || fail "jq is required for smoke contract tests"
+real_sudo="$(command -v sudo 2>/dev/null)" || fail "sudo is required for smoke contract tests"
 fake_bin="$test_root/bin"
 mkdir -p "$fake_bin"
 
@@ -286,6 +295,124 @@ grep -Fqx "$cleanup_instruction" "$root/deploy/README.md" || fail "cleanup-pendi
 for private_value in sha256:postgres sha256:updater ace-it-center-rollback-backend ace-it-center-rollback-web; do
   [[ "$pending_output" != *"$private_value"* ]] || fail "cleanup-pending output leaked private image identity"
 done
+
+cleanup_runbook="$test_root/cleanup-runbook.sh"
+awk '
+  $0 == "```bash" { in_block = 1; block = ""; next }
+  in_block && $0 == "```" {
+    if (block ~ /updater-state\/update-state\.json/ && block ~ /docker image rm/) {
+      printf "%s", block
+      found = 1
+    }
+    in_block = 0
+    next
+  }
+  in_block { block = block $0 ORS }
+  END { if (!found) exit 1 }
+' "$root/deploy/README.md" >"$cleanup_runbook" || fail "cleanup runbook is missing"
+
+[[ "$(id -u)" != 0 ]] || fail "root-owned state contract must run as a non-root operator"
+sudo -n true >/dev/null 2>&1 || fail "passwordless sudo is required for root-owned state contract"
+
+cleanup_case="$test_root/cleanup-permissions"
+cleanup_state_dir="$cleanup_case/updater-state"
+cleanup_state_file="$cleanup_state_dir/update-state.json"
+cleanup_source="$cleanup_case/update-state.source.json"
+cleanup_log="$cleanup_case/sudo.log"
+cleanup_bin="$cleanup_case/bin"
+mkdir -p "$cleanup_state_dir" "$cleanup_bin"
+cat >"$cleanup_source" <<'EOF'
+{
+  "task": {
+    "id": "123e4567-e89b-12d3-a456-426614174000",
+    "stage": "succeeded",
+    "cleanup": "pending",
+    "original": {
+      "backend": {
+        "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "version": "v1.2.2",
+        "rollback_alias": "ace-it-center-rollback-backend:123e4567-e89b-12d3-a456-426614174000",
+        "repository": "ghcr.io/s450586793/ace-it-center-backend"
+      },
+      "web": {
+        "id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "version": "v1.2.2",
+        "rollback_alias": "ace-it-center-rollback-web:123e4567-e89b-12d3-a456-426614174000",
+        "repository": "ghcr.io/s450586793/ace-it-center-web"
+      }
+    }
+  }
+}
+EOF
+sudo -n install -o root -g root -m 0600 "$cleanup_source" "$cleanup_state_file"
+[[ "$(stat -c '%U:%G:%a' "$cleanup_state_file")" == root:root:600 ]] || fail "state fixture is not root-owned mode 0600"
+if "$real_jq" -e '.task.stage == "succeeded"' "$cleanup_state_file" >/dev/null 2>&1; then
+  fail "non-root operator unexpectedly read root-owned mode-0600 state"
+fi
+
+cat >"$cleanup_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$1" >>"${CLEANUP_SUDO_LOG:?}"
+case "$1" in
+  test|jq)
+    exec "${REAL_SUDO:?}" -n "$@"
+    ;;
+  docker)
+    shift
+    case "$*" in
+      "image inspect sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        printf '[{"Id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","RepoTags":["ace-it-center-rollback-backend:123e4567-e89b-12d3-a456-426614174000"],"RepoDigests":["ghcr.io/s450586793/ace-it-center-backend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"Config":{"Labels":{"org.opencontainers.image.version":"v1.2.2"}}}]\n'
+        ;;
+      "image inspect sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        printf '[{"Id":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","RepoTags":["ace-it-center-rollback-web:123e4567-e89b-12d3-a456-426614174000"],"RepoDigests":["ghcr.io/s450586793/ace-it-center-web@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"Config":{"Labels":{"org.opencontainers.image.version":"v1.2.2"}}}]\n'
+        ;;
+      "image inspect --format {{.Id}} ace-it-center-rollback-backend:123e4567-e89b-12d3-a456-426614174000")
+        printf 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+        ;;
+      "image inspect --format {{.Id}} ace-it-center-rollback-web:123e4567-e89b-12d3-a456-426614174000")
+        printf 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n'
+        ;;
+      "ps -aq --filter ancestor=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"|\
+      "ps -aq --filter ancestor=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"|\
+      "image rm ace-it-center-rollback-backend:123e4567-e89b-12d3-a456-426614174000"|\
+      "image rm sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"|\
+      "image rm ace-it-center-rollback-web:123e4567-e89b-12d3-a456-426614174000"|\
+      "image rm sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        ;;
+      *) exit 98 ;;
+    esac
+    ;;
+  *) exit 99 ;;
+esac
+EOF
+chmod +x "$cleanup_bin/sudo"
+: >"$cleanup_log"
+cleanup_output="$({
+  cd "$root"
+  env PATH="$cleanup_bin:$PATH" REAL_SUDO="$real_sudo" CLEANUP_SUDO_LOG="$cleanup_log" ACE_DATA_DIR="$cleanup_case" \
+    bash "$cleanup_runbook"
+} 2>&1)" || fail "documented cleanup runbook failed against root-owned state"
+[[ -z "$cleanup_output" ]] || fail "cleanup runbook exposed private state or Docker output"
+[[ "$(grep -cx test "$cleanup_log")" == 1 ]] || fail "cleanup runbook did not root-scope its state existence check"
+[[ "$(grep -cx jq "$cleanup_log")" == 12 ]] || fail "cleanup runbook did not root-scope all state jq reads"
+[[ "$(grep -cx docker "$cleanup_log")" == 10 ]] || fail "cleanup runbook changed its exact non-force Docker checks or deletes"
+
+state_access_count=0
+while IFS= read -r line; do
+  [[ "$line" == *'"$state_file"'* ]] || continue
+  [[ "$line" != state_file=* ]] || continue
+  case "$line" in
+    *'sudo test '*|*'sudo jq '*) state_access_count=$((state_access_count + 1)) ;;
+    *) fail "cleanup runbook contains a non-root state access" ;;
+  esac
+done <"$cleanup_runbook"
+[[ "$state_access_count" == 8 ]] || fail "cleanup runbook does not root-scope every expected state access"
+
+sudo -n rm -f "$cleanup_state_file"
 
 bounded="$test_root/bounded"
 run_failure "$bounded" env ACE_CONFIRM_SYSTEM_UPDATE=yes FAKE_POLL_MODE=checking FAKE_STATUS_ADVANCE=300

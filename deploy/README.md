@@ -159,16 +159,18 @@ bash scripts/deploy-dsm.sh
 
 cleanup_pending: follow deploy/README.md using private updater-state/update-state.json; verify exact task original IDs/aliases have no container references, then delete them without force.
 
-在 DSM 项目根目录执行以下命令。它只从权限受限的私有状态文件读取本任务的 `original` 镜像身份，先验证
-固定仓库、canonical task alias、image ID、RepoTags、RepoDigests 和 OCI version，再确认没有任何运行中或
-已停止容器引用。删除命令不使用 force，不输出私有镜像身份；任一校验失败都会立即停止：
+运行前先 `cd /volume4/docker/docker/ace-it-center`，并确认当前 shell 的 `ACE_DATA_DIR` 与项目 `.env` 中的值
+完全一致；不得通过输出整个 `.env` 来核对。以下 `state_file` 必须指向 Compose 挂载给 updater 的同一宿主机
+`updater-state` 目录。命令只通过 `sudo` 从 root-owned、mode-`0600` 的私有状态文件读取本任务的 `original`
+镜像身份，先验证固定仓库、canonical task alias、image ID、RepoTags、RepoDigests 和 OCI version，再确认没有
+任何运行中或已停止容器引用。删除命令不使用 force，不输出私有镜像身份；任一校验失败都会立即停止：
 
 ```bash
 set -euo pipefail
 state_file="${ACE_DATA_DIR:-.}/updater-state/update-state.json"
-test -f "$state_file"
-jq -e '.task.stage == "succeeded" and .task.cleanup == "pending"' "$state_file" >/dev/null
-task_id="$(jq -er '.task.id' "$state_file")"
+sudo test -f "$state_file"
+sudo jq -e '.task.stage == "succeeded" and .task.cleanup == "pending"' "$state_file" >/dev/null
+task_id="$(sudo jq -er '.task.id' "$state_file")"
 [[ "$task_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
 
 inspect_file="$(mktemp)"
@@ -180,11 +182,11 @@ for service in backend web; do
     backend) repository='ghcr.io/s450586793/ace-it-center-backend' ;;
     web) repository='ghcr.io/s450586793/ace-it-center-web' ;;
   esac
-  image_id="$(jq -er --arg service "$service" '.task.original[$service].id' "$state_file")"
-  digest="$(jq -er --arg service "$service" '.task.original[$service].digest' "$state_file")"
-  version="$(jq -er --arg service "$service" '.task.original[$service].version' "$state_file")"
-  alias="$(jq -er --arg service "$service" '.task.original[$service].rollback_alias' "$state_file")"
-  recorded_repository="$(jq -er --arg service "$service" '.task.original[$service].repository' "$state_file")"
+  image_id="$(sudo jq -er --arg service "$service" '.task.original[$service].id' "$state_file")"
+  digest="$(sudo jq -er --arg service "$service" '.task.original[$service].digest' "$state_file")"
+  version="$(sudo jq -er --arg service "$service" '.task.original[$service].version' "$state_file")"
+  alias="$(sudo jq -er --arg service "$service" '.task.original[$service].rollback_alias' "$state_file")"
+  recorded_repository="$(sudo jq -er --arg service "$service" '.task.original[$service].repository' "$state_file")"
   [[ "$recorded_repository" == "$repository" ]]
   [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ && "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
   [[ "$alias" == "ace-it-center-rollback-${service}:${task_id}" ]]
