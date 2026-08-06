@@ -1,10 +1,11 @@
 # Ace IT Center DSM 部署
 
-当前 Compose 部署包含 3 个服务：
+当前 Compose 部署包含 4 个服务：
 
 - `web`：Vue 3 前端、持久化 Agent release 下载和 `/api` 反向代理；
 - `backend`：Go 控制平面；
-- `postgres`：平台持久数据。
+- `postgres`：平台持久数据，不参与 Web 升级；
+- `updater`：仅在内部网络运行的 Web 升级执行器；它不发布 DSM 端口，且不通过 Web 自我升级。
 
 ## DSM 前置条件
 
@@ -23,12 +24,21 @@
 
 ```bash
 cd /volume4/docker/docker/ace-it-center
-mkdir -p postgres releases/windows
+mkdir -p postgres releases/windows updater-state backups
 cp .env.example .env
 chmod 600 .env
 ```
 
-必须将 `POSTGRES_PASSWORD` 替换为仅包含字母和数字的高强度随机值，避免数据库连接 URL 转义问题。然后执行：
+必须将 `POSTGRES_PASSWORD` 替换为仅包含字母和数字的高强度随机值，避免数据库连接 URL 转义问题。
+还必须生成至少 32 随机字节的 `ACE_UPDATER_TOKEN`，该 Token 只保存在 DSM 的 `.env`，其权限必须为
+`0600`，不得写入 Git、日志或浏览器。例如：
+
+```bash
+openssl rand -base64 48
+```
+
+将结果写入 `ACE_UPDATER_TOKEN` 后，把 `ACE_UPDATER_IMAGE_TAG` 设置为不可变的 `vX.Y.Z`，例如
+`v0.4.1`。然后启动四服务 Compose 项目：
 
 ```bash
 sudo docker compose config
@@ -46,13 +56,23 @@ cd /volume4/docker/docker/ace-it-center
 bash scripts/deploy-dsm.sh
 ```
 
-私有 GHCR 必须先使用仅有 `read:packages` 权限的专用 Token 登录。`.env` 中设置要部署的镜像标签：
+源码仓库保持 Private。首次发布后，在 GitHub Package settings 中将 `backend`、`web` 和 `updater`
+三个 GHCR package 都设为 Public。DSM 首次部署及后续拉取都不需要 `docker login`，也不应在 DSM
+保存 GitHub 或 GHCR Token。
+
+在 `.env` 中配置 Backend/Web 的 stable 标签和 updater 的不可变标签：
 
 ```dotenv
-ACE_IMAGE_TAG=latest
+ACE_IMAGE_TAG=stable
+ACE_UPDATER_IMAGE_TAG=vX.Y.Z
 ```
 
-建议正式发布时把 `ACE_IMAGE_TAG` 固定为 `vX.Y.Z` 或 `sha-...`，避免不可追踪的更新。
+`ACE_IMAGE_TAG=stable` 仅供 backend/web 的 Owner 页面升级流程发现与切换。`updater` 永远使用显式的
+不可变 `vX.Y.Z`；更新 updater 本身时，只能在 DSM Container Manager 中手动更新项目，或显式修改
+`.env` 中的 tag 后手动执行 Compose recreation。Web 升级绝不更新 `postgres` 或 `updater`。
+
+Public 镜像的 filesystem layer 可被任何人下载和检查。构建上下文和镜像 layer 中绝不能包含 `.env`、
+Token、数据库、签名私钥或任何业务数据。
 
 新版本健康检查通过后，部署脚本会运行 `scripts/cleanup-dsm-images.sh`。该脚本只处理 Ace IT Center、Windows builder 和 Go 测试镜像，并保留所有仍被容器引用的镜像；不会清理其他 DSM 项目。
 
@@ -122,12 +142,27 @@ sudo docker compose up -d --force-recreate backend
 
 ## 数据与升级
 
-PostgreSQL 数据保存在 `/volume4/docker/docker/ace-it-center/postgres`，Windows Agent Release 保存在
-`/volume4/docker/docker/ace-it-center/releases`。升级前先备份这两个目录，然后在项目根目录执行：
+PostgreSQL 数据保存在 `${ACE_DATA_DIR}/postgres`，Windows Agent Release 保存在
+`${ACE_RELEASES_DIR}`。Web 升级前由 updater 创建 PostgreSQL custom-format 备份，路径为
+`${ACE_DATA_DIR}/backups`，文件名形如 `upgrade-<UTC>-<task-id>.dump`。这不是 DSM 灾难恢复备份的替代品；
+仍应按既有运维制度备份数据目录和 release。
+
+Backend/Web 的稳定版升级应由 Owner 页面“系统升级”发起：先检查最新 stable，再确认准确目标版本。
+不要用 `deploy-dsm.sh` 代替该事务来重建 backend/web。普通部署或手动更新 updater 时，才在项目根目录执行：
 
 ```bash
 bash scripts/deploy-dsm.sh
 ```
+
+升级成功但页面显示 `cleanup_pending` 时，先检查镜像引用；确认后只能删除页面显示的 Ace IT Center
+旧 backend/web 镜像，不能使用 prune、强制删除或按名称模糊删除。
+
+页面显示 `manual_intervention` 时：停止 updater，保留 `updater-state/update-state.json` 和全部新旧镜像；
+检查 backend/web，并先将两者恢复到同一个版本；随后归档受阻的状态文件，再重启 updater。不要删除
+PostgreSQL、updater、Windows builder 或其他 Compose 项目的镜像。
+
+首次上线此功能时，只有在证明没有任何容器引用后，才可一次性清理遗留的 `pre-v*` backend/web 镜像。
+该清理明确排除 postgres、updater、Windows builder 和其他项目；后续升级不重复执行此遗留清理。
 
 ## 维护记录
 

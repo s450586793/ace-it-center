@@ -22,7 +22,10 @@ cd /volume4/docker/docker/ace-it-center
 bash scripts/deploy-dsm.sh
 ```
 
-脚本只从 GHCR 拉取已经通过 CI 的镜像；DSM 不拉取源码，也不在本机编译。
+脚本只从 GHCR 拉取已经通过 CI 的镜像；DSM 不拉取源码，也不在本机编译。源码仓库保持 Private，
+`backend`、`web` 和 `updater` 三个 GHCR package 发布为 Public，因此 DSM 不需要执行
+`docker login` 或保存 GHCR Token。首次部署、不可变 updater 标签和 Owner Web 升级的运维步骤见
+[`deploy/README.md`](deploy/README.md)。
 
 ## 验证
 
@@ -31,4 +34,5 @@ go test ./...
 cd frontend && npm ci && npm test -- --run && npm run build
 ```
 
-向 `main` 推送代码时，GitHub Actions 会运行测试，并将 `backend`、`web` 镜像发布到 GHCR。
+向 `main` 推送代码时，GitHub Actions 会运行测试；正式发布会将 `backend`、`web` 和 `updater`
+镜像发布到 GHCR。
