@@ -23,6 +23,7 @@ web_image="${web_image:-ghcr.io/s450586793/ace-it-center-web}"
 collect_candidates() {
   sudo docker image ls --no-trunc --quiet --filter label=com.docker.compose.project=ace-it-center
   sudo docker image ls --no-trunc --quiet --filter label=com.docker.compose.project=ace-it-center-windows-builder
+  sudo docker image ls --no-trunc --quiet --filter label=org.opencontainers.image.source=https://github.com/s450586793/ace-it-center
   sudo docker image ls --no-trunc --quiet ace-it-center-backend
   sudo docker image ls --no-trunc --quiet ace-it-center-web
   sudo docker image ls --no-trunc --quiet ace-it-center-windows-builder-windows-builder

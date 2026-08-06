@@ -22,12 +22,7 @@ services:
 
   backend:
     image: ${ACE_BACKEND_IMAGE:-ghcr.io/s450586793/ace-it-center-backend}:${ACE_IMAGE_TAG:-latest}
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      target: backend
-      args:
-        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    pull_policy: always
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-ace}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ace_it_center}?sslmode=disable
@@ -48,13 +43,7 @@ services:
 
   web:
     image: ${ACE_WEB_IMAGE:-ghcr.io/s450586793/ace-it-center-web}:${ACE_IMAGE_TAG:-latest}
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      target: web
-      args:
-        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    pull_policy: always
     restart: unless-stopped
     ports:
       - ${ACE_HTTP_PORT:-9060}:80

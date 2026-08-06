@@ -29,6 +29,8 @@ case "\$*" in
   "image ls --no-trunc --quiet --filter label=com.docker.compose.project=ace-it-center-windows-builder")
     printf '%s\\n' '$builder'
     ;;
+  "image ls --no-trunc --quiet --filter label=org.opencontainers.image.source=https://github.com/s450586793/ace-it-center")
+    ;;
   "image ls --no-trunc --quiet "*)
     ;;
   "ps -aq --filter ancestor=$current")

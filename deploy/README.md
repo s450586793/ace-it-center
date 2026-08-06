@@ -32,31 +32,29 @@ chmod 600 .env
 
 ```bash
 sudo docker compose config
-sudo docker compose up -d --build
+sudo docker compose pull
+sudo docker compose up -d --no-build
 sudo docker compose ps
 ```
 
-## GitHub 拉取部署
+## GitHub 镜像部署
 
-GitHub 主仓库为私有仓库。DSM 使用只读 deploy key 克隆源码，不保存个人 GitHub 凭据。首次迁移完成后，在项目目录执行：
+源码推送到 GitHub 后，GitHub Actions 自动测试并构建 GHCR 镜像。DSM 的 Compose 项目只拉取镜像，不拉取源码，也不执行本地构建。更新时执行：
 
 ```bash
 cd /volume4/docker/docker/ace-it-center
 bash scripts/deploy-dsm.sh
 ```
 
-脚本只接受 `origin/main` 的 fast-forward 更新。默认 `ACE_DEPLOY_MODE=source`，DSM 拉取源码后构建 `backend` 和 `web`。如已使用仅有 `read:packages` 权限的专用 Token 登录 GHCR，可在 `.env` 设置：
+私有 GHCR 必须先使用仅有 `read:packages` 权限的专用 Token 登录。`.env` 中设置要部署的镜像标签：
 
 ```dotenv
-ACE_DEPLOY_MODE=images
 ACE_IMAGE_TAG=latest
 ```
 
-此模式会直接拉取 GitHub Actions 已测试的镜像，不在 DSM 构建。建议正式发布时把 `ACE_IMAGE_TAG` 固定为 `vX.Y.Z` 或 `sha-...`，避免不可追踪的更新。
+建议正式发布时把 `ACE_IMAGE_TAG` 固定为 `vX.Y.Z` 或 `sha-...`，避免不可追踪的更新。
 
 新版本健康检查通过后，部署脚本会运行 `scripts/cleanup-dsm-images.sh`。该脚本只处理 Ace IT Center、Windows builder 和 Go 测试镜像，并保留所有仍被容器引用的镜像；不会清理其他 DSM 项目。
-
-默认使用 `goproxy.cn` 和 `registry.npmmirror.com` 下载构建依赖，可通过 `.env` 中的 `GOPROXY`、`NPM_REGISTRY` 覆盖。
 
 健康检查：
 
@@ -125,11 +123,10 @@ sudo docker compose up -d --force-recreate backend
 ## 数据与升级
 
 PostgreSQL 数据保存在 `/volume4/docker/docker/ace-it-center/postgres`，Windows Agent Release 保存在
-`/volume4/docker/docker/ace-it-center/releases`。升级前先备份这两个目录，然后在项目根目录重新执行：
+`/volume4/docker/docker/ace-it-center/releases`。升级前先备份这两个目录，然后在项目根目录执行：
 
 ```bash
-sudo docker compose build --pull
-sudo docker compose up -d
+bash scripts/deploy-dsm.sh
 ```
 
 ## 维护记录

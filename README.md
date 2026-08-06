@@ -15,14 +15,14 @@ Ace IT Center 是面向个人和小企业的私有化 IT 基础设施管理平�
 
 生产数据、Release、`.env` 和签名私钥只保存在 DSM，不进入 Git。完整部署说明见 [`deploy/README.md`](deploy/README.md)。
 
-更新源码部署：
+更新 DSM Compose 项目：
 
 ```bash
 cd /volume4/docker/docker/ace-it-center
 bash scripts/deploy-dsm.sh
 ```
 
-设置 `ACE_DEPLOY_MODE=images` 后，更新脚本会改为从 GHCR 拉取已经通过 CI 的镜像。
+脚本只从 GHCR 拉取已经通过 CI 的镜像；DSM 不拉取源码，也不在本机编译。
 
 ## 验证
 
