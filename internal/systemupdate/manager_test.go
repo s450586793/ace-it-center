@@ -50,15 +50,17 @@ func TestManagerCheckForcesAndPersistsFreshResult(t *testing.T) {
 func TestManagerStartValidatesFreshExactAvailableCheckAndSingleTask(t *testing.T) {
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name   string
-		state  PersistentState
-		target string
+		name    string
+		state   PersistentState
+		target  string
+		wantErr error
 	}{
-		{name: "missing check", target: "v0.4.1"},
-		{name: "two minute expiry", state: PersistentState{LastCheck: managerCheckResultPointer(now.Add(-2*time.Minute), "v0.4.0", "v0.4.1", true)}, target: "v0.4.1"},
-		{name: "different target", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.0", "v0.4.1", true)}, target: "v0.4.2"},
-		{name: "no update", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.1", "v0.4.1", false)}, target: "v0.4.1"},
-		{name: "active task", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.0", "v0.4.1", true), Task: &Task{ID: "active", Stage: StagePulling}}, target: "v0.4.1"},
+		{name: "missing check", target: "v0.4.1", wantErr: ErrUpdateCheckExpired},
+		{name: "two minute expiry", state: PersistentState{LastCheck: managerCheckResultPointer(now.Add(-2*time.Minute), "v0.4.0", "v0.4.1", true)}, target: "v0.4.1", wantErr: ErrUpdateCheckExpired},
+		{name: "different target", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.0", "v0.4.1", true)}, target: "v0.4.2", wantErr: ErrUpdateTargetMismatch},
+		{name: "no update", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.1", "v0.4.1", false)}, target: "v0.4.1", wantErr: ErrUpdateUnavailable},
+		{name: "active task", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.0", "v0.4.1", true), Task: &Task{ID: "active", Stage: StagePulling}}, target: "v0.4.1", wantErr: ErrUpdateTaskActive},
+		{name: "manual intervention task", state: PersistentState{LastCheck: managerCheckResultPointer(now, "v0.4.0", "v0.4.1", true), Task: &Task{ID: "manual", Stage: StageManualIntervention}}, target: "v0.4.1", wantErr: ErrUpdateTaskActive},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -76,8 +78,8 @@ func TestManagerStartValidatesFreshExactAvailableCheckAndSingleTask(t *testing.T
 				t.Fatal(err)
 			}
 
-			if _, err := manager.Start(context.Background(), test.target); err == nil {
-				t.Fatal("Start() accepted invalid state")
+			if _, err := manager.Start(context.Background(), test.target); !errors.Is(err, test.wantErr) {
+				t.Fatalf("Start() error = %v, want errors.Is(..., %v)", err, test.wantErr)
 			}
 			if launched {
 				t.Fatal("Start() launched an invalid task")

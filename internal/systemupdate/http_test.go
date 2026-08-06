@@ -3,6 +3,7 @@ package systemupdate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -133,9 +134,11 @@ func TestHTTPMapsStartOutcomesWithoutLeakingDetails(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "accepted", wantStatus: http.StatusAccepted},
-		{name: "active", startErr: errors.New("system update task is already active"), wantStatus: http.StatusConflict},
-		{name: "manual", startErr: errors.New("system update task is already active"), wantStatus: http.StatusConflict},
-		{name: "check mismatch", startErr: errors.New("system update target does not match the last check"), wantStatus: http.StatusConflict},
+		{name: "active", startErr: fmt.Errorf("request conflict: %w", ErrUpdateTaskActive), wantStatus: http.StatusConflict},
+		{name: "manual", startErr: fmt.Errorf("recovery conflict: %w", ErrUpdateTaskActive), wantStatus: http.StatusConflict},
+		{name: "check expired", startErr: fmt.Errorf("stale check: %w", ErrUpdateCheckExpired), wantStatus: http.StatusConflict},
+		{name: "unavailable", startErr: fmt.Errorf("no release: %w", ErrUpdateUnavailable), wantStatus: http.StatusConflict},
+		{name: "check mismatch", startErr: fmt.Errorf("version conflict: %w", ErrUpdateTargetMismatch), wantStatus: http.StatusConflict},
 		{name: "registry", startErr: &RegistryError{}, wantStatus: http.StatusServiceUnavailable},
 		{name: "platform", startErr: errors.New("docker daemon image-id sha256:deadbeef raw registry secret"), wantStatus: http.StatusServiceUnavailable},
 	} {

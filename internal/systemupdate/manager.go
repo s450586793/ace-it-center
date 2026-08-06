@@ -18,6 +18,17 @@ const (
 	cleanupPendingMessage = "升级成功，旧镜像仍被引用，需在 DSM 中处理"
 )
 
+var (
+	// ErrUpdateTaskActive reports that an existing task still blocks a new update.
+	ErrUpdateTaskActive = errors.New("system update task is already active")
+	// ErrUpdateCheckExpired reports that the last update check cannot be used.
+	ErrUpdateCheckExpired = errors.New("system update check has expired")
+	// ErrUpdateUnavailable reports that the last check found no update.
+	ErrUpdateUnavailable = errors.New("system update is not available")
+	// ErrUpdateTargetMismatch reports a requested version different from the last check.
+	ErrUpdateTargetMismatch = errors.New("system update target does not match the last check")
+)
+
 type ManagerOptions struct {
 	Store          *FileStore
 	Checker        *Checker
@@ -142,21 +153,21 @@ func (manager *Manager) Start(ctx context.Context, targetVersion string) (TaskVi
 	}
 	if state.Task != nil && (!state.Task.Stage.Terminal() || state.Task.Stage == StageManualIntervention) {
 		manager.mu.Unlock()
-		return TaskView{}, errors.New("system update task is already active")
+		return TaskView{}, ErrUpdateTaskActive
 	}
 	check := state.LastCheck
 	now := manager.now().UTC()
 	if check == nil || check.CheckedAt.After(now) || now.Sub(check.CheckedAt) >= manager.checkTTL {
 		manager.mu.Unlock()
-		return TaskView{}, errors.New("system update check has expired")
+		return TaskView{}, ErrUpdateCheckExpired
 	}
 	if !check.Available {
 		manager.mu.Unlock()
-		return TaskView{}, errors.New("system update is not available")
+		return TaskView{}, ErrUpdateUnavailable
 	}
 	if check.Target.Backend.Version != targetVersion || check.Target.Web.Version != targetVersion {
 		manager.mu.Unlock()
-		return TaskView{}, errors.New("system update target does not match the last check")
+		return TaskView{}, ErrUpdateTargetMismatch
 	}
 	startedAt := now
 	task := Task{

@@ -139,10 +139,10 @@ func decodeStartRequest(request *http.Request) (StartRequest, error) {
 }
 
 func isStartConflict(err error) bool {
-	return err.Error() == "system update task is already active" ||
-		err.Error() == "system update check has expired" ||
-		err.Error() == "system update is not available" ||
-		err.Error() == "system update target does not match the last check"
+	return errors.Is(err, ErrUpdateTaskActive) ||
+		errors.Is(err, ErrUpdateCheckExpired) ||
+		errors.Is(err, ErrUpdateUnavailable) ||
+		errors.Is(err, ErrUpdateTargetMismatch)
 }
 
 func writeServiceUnavailable(writer http.ResponseWriter) {
