@@ -80,6 +80,27 @@ func TestFileStoreSaveUsesPrivateParentAndStateModes(t *testing.T) {
 	}
 }
 
+func TestFileStoreSaveTightensExistingParentMode(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "existing")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := NewFileStore(filepath.Join(directory, "state.json")).Save(PersistentState{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("existing parent mode = %o, want 0700", got)
+	}
+}
+
 func TestFileStoreSaveCleansTemporaryFileWhenRenameFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	store := NewFileStore(path)

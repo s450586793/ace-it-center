@@ -78,6 +78,9 @@ func (store *FileStore) Save(state PersistentState) error {
 	if err := fileStoreOps.mkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create update state directory: %w", err)
 	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		return fmt.Errorf("secure update state directory: %w", err)
+	}
 
 	temporary, err := fileStoreOps.createTemp(directory, ".systemupdate-*.tmp")
 	if err != nil {

@@ -119,6 +119,21 @@ type StatusView struct {
 	Task            *TaskView       `json:"task,omitempty"`
 }
 
+var publicErrorMessages = map[string]string{
+	"state_invalid":         "升级状态无效",
+	"check_expired":         "升级检查结果已过期",
+	"backup_failed":         "升级备份失败",
+	"pull_failed":           "升级镜像拉取失败",
+	"backend_switch_failed": "后端服务切换失败",
+	"backend_unhealthy":     "后端服务健康检查失败",
+	"web_switch_failed":     "Web 服务切换失败",
+	"web_unhealthy":         "Web 服务健康检查失败",
+	"stability_failed":      "升级稳定性检查失败",
+	"rollback_failed":       "升级回滚失败",
+	"cleanup_pending":       "升级清理未完成",
+	"updater_restarted":     "升级服务已重启",
+}
+
 // ValidateVersion accepts canonical semantic versions with the required v prefix.
 func ValidateVersion(version string) error {
 	if !semver.IsValid(version) || semver.Canonical(version) != version {
@@ -129,7 +144,7 @@ func ValidateVersion(version string) error {
 
 // View returns the public task representation without runtime image identifiers.
 func (task Task) View() TaskView {
-	return TaskView{
+	view := TaskView{
 		ID: task.ID,
 		From: VersionPairView{
 			Backend: task.Original.Backend.Version,
@@ -139,13 +154,22 @@ func (task Task) View() TaskView {
 			Backend: task.Target.Backend.Version,
 			Web:     task.Target.Web.Version,
 		},
-		Stage:        task.Stage,
-		CreatedAt:    task.CreatedAt,
-		StartedAt:    task.StartedAt,
-		FinishedAt:   task.FinishedAt,
-		RolledBack:   task.RolledBack,
-		Cleanup:      task.Cleanup,
-		ErrorCode:    task.ErrorCode,
-		ErrorMessage: task.ErrorMessage,
+		Stage:      task.Stage,
+		CreatedAt:  task.CreatedAt,
+		StartedAt:  task.StartedAt,
+		FinishedAt: task.FinishedAt,
+		RolledBack: task.RolledBack,
+		Cleanup:    task.Cleanup,
 	}
+	if task.ErrorCode == "" {
+		return view
+	}
+	if message, ok := publicErrorMessages[task.ErrorCode]; ok {
+		view.ErrorCode = task.ErrorCode
+		view.ErrorMessage = message
+		return view
+	}
+	view.ErrorCode = "state_invalid"
+	view.ErrorMessage = publicErrorMessages[view.ErrorCode]
+	return view
 }
