@@ -27,6 +27,12 @@ function stopNodePolling() {
   document.removeEventListener('visibilitychange', refreshVisibleNodes)
 }
 
+function expireSession() {
+  owner.value = null
+  phase.value = 'login'
+  stopNodePolling()
+}
+
 function refreshVisibleNodes() {
   if (phase.value === 'ready' && document.visibilityState === 'visible') {
     void Promise.all([loadNodes(), loadPairings()])
@@ -50,9 +56,7 @@ function loadNodes(): Promise<void> {
     })
     .catch(requestError => {
       if (requestError instanceof APIError && requestError.status === 401) {
-        owner.value = null
-        phase.value = 'login'
-        stopNodePolling()
+        expireSession()
         return
       }
       error.value = requestError instanceof Error ? requestError.message : 'Unable to refresh devices'
@@ -74,9 +78,7 @@ function loadPairings(): Promise<void> {
     })
     .catch(requestError => {
       if (requestError instanceof APIError && requestError.status === 401) {
-        owner.value = null
-        phase.value = 'login'
-        stopNodePolling()
+        expireSession()
         return
       }
       pairingError.value = '无法刷新待配对设备，请稍后重试'
@@ -147,9 +149,7 @@ async function loadData() {
 
 async function logout() {
   await apiRequest('/api/v1/auth/logout', { method: 'POST' })
-  owner.value = null
-  phase.value = 'login'
-  stopNodePolling()
+  expireSession()
 }
 
 onMounted(initialize)
@@ -176,6 +176,7 @@ onBeforeUnmount(stopNodePolling)
       :pairings="pairings"
       @refresh="loadData"
       @logout="logout"
+      @session-expired="expireSession"
     />
     <p v-if="pairingError || error" role="alert">{{ pairingError || error }}</p>
   </template>

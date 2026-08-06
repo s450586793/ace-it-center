@@ -17,6 +17,7 @@ const pairing = {
 
 const OperationsWorkspaceStub = defineComponent({
   props: { pairings: { type: Array, required: true } },
+  emits: ['session-expired'],
   template: '<div data-testid="workspace-pairings">{{ pairings.map(pairing => pairing.hostname).join(",") }}</div>',
 })
 
@@ -313,5 +314,24 @@ describe('App', () => {
     document.dispatchEvent(new Event('visibilitychange'))
     await flushPromises()
     expect(requestCount(fetchMock, '/api/v1/nodes')).toBe(1)
+  })
+
+  it('returns to login and stops node and pairing polling when system updates expire the session', async () => {
+    vi.useFakeTimers()
+    const fetchMock = mockAuthenticatedPlatform()
+    const wrapper = mountApp()
+    await flushPromises()
+    expect(requestCount(fetchMock, '/api/v1/nodes')).toBe(1)
+    expect(requestCount(fetchMock, '/api/v1/pairings')).toBe(1)
+
+    wrapper.getComponent(OperationsWorkspaceStub).vm.$emit('session-expired')
+    await flushPromises()
+
+    expect(wrapper.find('input[name="username"]').exists()).toBe(true)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flushPromises()
+    expect(requestCount(fetchMock, '/api/v1/nodes')).toBe(1)
+    expect(requestCount(fetchMock, '/api/v1/pairings')).toBe(1)
+    wrapper.unmount()
   })
 })

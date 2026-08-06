@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   Bell, Connection, DataBoard, Download, Expand, Fold, Monitor, Moon, Plus, Refresh,
-  Sunny, SwitchButton,
+  Sunny, SwitchButton, UploadFilled,
 } from '@element-plus/icons-vue'
 import { ElDialog } from 'element-plus'
 import { apiRequest } from '../api'
@@ -13,8 +13,9 @@ import CommandCenter from './CommandCenter.vue'
 import NetworkMonitoring from './NetworkMonitoring.vue'
 import NodeTable from './NodeTable.vue'
 import PairingRequests from './PairingRequests.vue'
+import SystemUpdate from './SystemUpdate.vue'
 
-type WorkspaceView = 'overview' | 'network' | 'commands' | 'pairings' | 'downloads'
+type WorkspaceView = 'overview' | 'network' | 'commands' | 'pairings' | 'downloads' | 'updates'
 
 const releaseManifestPath = '/downloads/windows/stable/latest.json'
 const fallbackAgentVersion = '0.4.0'
@@ -26,7 +27,7 @@ const props = defineProps<{
   pairings: PairingRequest[]
 }>()
 
-const emit = defineEmits<{ refresh: []; logout: [] }>()
+const emit = defineEmits<{ refresh: []; logout: []; 'session-expired': [] }>()
 const now = ref(new Date())
 const latestAgentVersion = ref(fallbackAgentVersion)
 const activeView = ref<WorkspaceView>('overview')
@@ -76,6 +77,7 @@ const pageTitle = computed(() => ({
   commands: { index: 'INFRASTRUCTURE / COMMANDS', title: '命令中心' },
   pairings: { index: 'INFRASTRUCTURE / PAIRINGS', title: '待配对设备' },
   downloads: { index: 'INFRASTRUCTURE / AGENTS', title: '客户端下载' },
+  updates: { index: 'INFRASTRUCTURE / UPDATES', title: '系统升级' },
 }[activeView.value]))
 
 function showView(view: WorkspaceView) {
@@ -148,6 +150,9 @@ onBeforeUnmount(() => window.clearInterval(clock))
         <a href="#downloads" :class="{ active: activeView === 'downloads' }" :aria-current="activeView === 'downloads' ? 'page' : undefined" @click.prevent="showView('downloads')">
           <Download aria-hidden="true" /><span>客户端下载</span>
         </a>
+        <a href="#updates" :class="{ active: activeView === 'updates' }" :aria-current="activeView === 'updates' ? 'page' : undefined" @click.prevent="showView('updates')">
+          <UploadFilled aria-hidden="true" /><span>系统升级</span>
+        </a>
       </nav>
       <div class="sidebar-spacer"></div>
       <div class="sidebar-health">
@@ -198,7 +203,8 @@ onBeforeUnmount(() => window.clearInterval(clock))
       <NetworkMonitoring v-else-if="activeView === 'network'" data-testid="network-monitoring" :nodes="nodes" :now="now" />
       <CommandCenter v-else-if="activeView === 'commands'" :nodes="nodes" />
       <PairingRequests v-else-if="activeView === 'pairings'" :pairings="pairings" :groups="groups" @approved="refreshWorkspace" @rejected="refreshWorkspace" @create-group="openDialog" />
-      <AgentDownloads v-else />
+      <AgentDownloads v-else-if="activeView === 'downloads'" />
+      <SystemUpdate v-else @session-expired="emit('session-expired')" />
 
       <footer class="workspace-footer">
         <span>Ace IT Center / Phase 1</span><span>Last refresh {{ now.toLocaleTimeString('zh-CN', { hour12: false }) }}</span>

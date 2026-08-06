@@ -219,6 +219,33 @@ td small { margin-top: 3px; color: var(--muted); }
 .agent-role-list dt { font-weight: 600; }
 .agent-role-list dd { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 
+.system-update { min-width: 0; padding: 28px 0; border-bottom: 1px solid var(--line); }
+.system-update-heading, .system-update-progress-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.system-update-heading h2 { margin-top: 6px; }
+.system-update-versions { margin-top: 20px; border-top: 1px solid var(--line); }
+.system-update-version-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.system-update-version-row > span, .system-update-version-row small { color: var(--muted); font-size: 12px; }
+.system-update-version-value { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; }
+.system-update-version-value code, .system-update-confirmation code { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.system-update-actions { display: grid; gap: 12px; margin-top: 18px; }
+.system-update-start { width: 100%; min-width: 132px; }
+.system-update-notice { padding: 10px 12px; color: var(--muted); background: var(--surface-alt); border-left: 3px solid var(--warning); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.system-update-progress { min-width: 0; margin-top: 26px; }
+.system-update-progress-heading { padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.system-update-progress-heading strong { color: var(--ink); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.system-update-status-list { height: 272px; padding: 0; margin: 0; overflow-y: auto; list-style: none; border-bottom: 1px solid var(--line); }
+.system-update-status-list li { min-height: 27px; display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
+.system-update-status-list li > span { width: 7px; height: 7px; flex: 0 0 7px; background: var(--line-strong); border-radius: 50%; }
+.system-update-status-list li.active { color: var(--ink); font-weight: 600; }
+.system-update-status-list li.active > span { background: var(--accent); }
+.system-update-status-list li.complete > span { background: var(--success); }
+.system-update-confirmation { display: grid; gap: 14px; }
+.system-update-confirmation > p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.system-update-confirmation dl { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 0; border-top: 1px solid var(--line); }
+.system-update-confirmation dl > div { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.system-update-confirmation dt { color: var(--muted); font-size: 12px; }
+.system-update-confirmation dd { min-width: 0; margin: 0; }
+
 .pairing-requests { padding: 28px 0; border-bottom: 1px solid var(--line); }
 .pairing-toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; }
 .pairing-toolbar-actions > small { color: var(--muted); font: 500 11px/1.4 'IBM Plex Mono', monospace; }
@@ -352,6 +379,12 @@ td small { margin-top: 3px; color: var(--muted); }
   .agent-role-list { display: grid; grid-template-columns: 1fr 1fr; }
   .agent-role-list > div { padding-right: 24px; }
   .agent-role-list > div + div { padding-left: 24px; border-left: 1px solid var(--line); }
+  .system-update-version-row { grid-template-columns: 104px minmax(0, 1fr) minmax(142px, auto); align-items: center; gap: 16px; }
+  .system-update-version-value { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .system-update-version-row small { text-align: right; }
+  .system-update-actions { grid-template-columns: minmax(132px, auto) minmax(0, 1fr); align-items: center; }
+  .system-update-start { width: auto; }
+  .system-update-confirmation dl { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
   .pairing-request-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .network-monitoring-heading { flex-wrap: nowrap; }
   .summary-error { width: auto; max-width: 50%; }

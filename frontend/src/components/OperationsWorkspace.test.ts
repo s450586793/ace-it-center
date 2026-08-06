@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiRequest } from '../api'
 import type { Node, NodeGroup, PairingRequest } from '../types'
@@ -6,6 +7,11 @@ import NodeTable from './NodeTable.vue'
 import OperationsWorkspace from './OperationsWorkspace.vue'
 
 vi.mock('../api', () => ({ apiRequest: vi.fn() }))
+
+const SystemUpdateStub = defineComponent({
+  emits: ['session-expired'],
+  template: '<section data-testid="system-update">系统升级内容</section>',
+})
 
 const node: Node = {
   id: 'node-1', group_id: 'group-1', name: 'finance-pc', type: 'windows',
@@ -34,6 +40,7 @@ function mountWorkspace(pairings: PairingRequest[] = []) {
     global: {
       stubs: {
         AgentDownloads: { template: '<section>选择客户端平台</section>' },
+        SystemUpdate: SystemUpdateStub,
         ElDialog: { template: '<div><slot /></div>' },
       },
     },
@@ -187,6 +194,33 @@ describe('OperationsWorkspace', () => {
 
     expect(wrapper.get('h1').text()).toBe('客户端下载')
     expect(wrapper.find('[data-action="enroll"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('opens system updates from #updates and closes the mobile navigation', async () => {
+    const wrapper = mountWorkspace()
+
+    await wrapper.get('button[title="打开导航"]').trigger('click')
+    expect(wrapper.get('aside').classes()).toContain('open')
+    await wrapper.get('a[href="#updates"]').trigger('click')
+
+    expect(wrapper.get('a[href="#updates"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('.section-index').text()).toBe('INFRASTRUCTURE / UPDATES')
+    expect(wrapper.get('h1').text()).toBe('系统升级')
+    expect(wrapper.get('[data-testid="system-update"]').text()).toContain('系统升级内容')
+    expect(wrapper.get('aside').classes()).not.toContain('open')
+    wrapper.unmount()
+  })
+
+  it('forwards a system update session expiry to the App boundary', async () => {
+    const wrapper = mountWorkspace()
+    await wrapper.get('a[href="#updates"]').trigger('click')
+    const update = wrapper.getComponent(SystemUpdateStub)
+
+    update.vm.$emit('session-expired')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('session-expired')).toHaveLength(1)
     wrapper.unmount()
   })
 })

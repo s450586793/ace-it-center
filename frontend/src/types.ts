@@ -133,3 +133,32 @@ export interface CommandTaskDetail {
   task: CommandTask
   executions: CommandExecution[]
 }
+
+export type SystemUpdateStage =
+  | 'checking' | 'backing_up' | 'pulling' | 'switching_backend' | 'checking_backend'
+  | 'switching_web' | 'checking_web' | 'stabilizing' | 'cleaning'
+  | 'rolling_back' | 'succeeded' | 'failed' | 'manual_intervention'
+
+export type CleanupStatus = 'not_run' | 'complete' | 'pending'
+
+export interface SystemUpdateTask {
+  id: string
+  from: { backend: string; web: string }
+  to: { backend: string; web: string }
+  stage: SystemUpdateStage
+  created_at: string
+  started_at?: string
+  finished_at?: string
+  rolled_back: boolean
+  cleanup: CleanupStatus
+  error_code?: string
+  error_message?: string
+}
+
+export interface SystemUpdateStatus {
+  current: { backend: string; web: string }
+  latest?: { backend: string; web: string; published_at?: string }
+  update_available: boolean
+  checked_at?: string
+  task?: SystemUpdateTask
+}
