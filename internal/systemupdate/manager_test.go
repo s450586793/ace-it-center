@@ -241,6 +241,63 @@ func TestManagerSuccessfulUpgradePreservesNewerConcurrentCheck(t *testing.T) {
 	}
 }
 
+func TestManagerSuccessfulUpgradeClearsConcurrentSameVersionRepublish(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	store := NewFileStore(filepath.Join(t.TempDir(), "state.json"))
+	check := managerCheckResult(now, "v0.4.0", "v0.4.1", true)
+	if err := store.Save(PersistentState{LastCheck: &check}); err != nil {
+		t.Fatal(err)
+	}
+	beforeFinish := make(chan struct{})
+	allowFinish := make(chan struct{})
+	platform := &managerPlatform{
+		images:       managerPair("v0.4.0"),
+		beforeFinish: beforeFinish,
+		allowFinish:  allowFinish,
+	}
+	republished := managerPair("v0.4.1")
+	republished.Backend.Digest = "sha256:republished-backend"
+	republished.Web.Digest = "sha256:republished-web"
+	checker := newTestChecker(managerPair("v0.4.0"), republished, func() time.Time { return now })
+	manager, err := NewManager(ManagerOptions{
+		Store: store, Checker: checker, Platform: platform, Now: func() time.Time { return now },
+		NewID:  func() string { return "123e4567-e89b-12d3-a456-426614174000" },
+		Launch: func(job func()) { job() }, StableWindow: time.Nanosecond, StableInterval: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type startResult struct {
+		view TaskView
+		err  error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		view, startErr := manager.Start(context.Background(), "v0.4.1")
+		started <- startResult{view: view, err: startErr}
+	}()
+
+	<-beforeFinish
+	if _, err := manager.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(allowFinish)
+	result := <-started
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.view.Stage != StageSucceeded || state.Task == nil || state.Task.Stage != StageSucceeded || state.LastCheck == nil {
+		t.Fatalf("result = %#v, state = %#v", result, state)
+	}
+	if state.LastCheck.Current.Backend.Digest != "sha256:backend-v0.4.1" || state.LastCheck.Current.Web.Digest != "sha256:web-v0.4.1" || state.LastCheck.Target.Backend.Digest != "sha256:republished-backend" || state.LastCheck.Target.Web.Digest != "sha256:republished-web" || state.LastCheck.Available {
+		t.Fatalf("last check = %#v", state.LastCheck)
+	}
+}
+
 type managerContextKey struct{}
 
 type managerResolver struct {

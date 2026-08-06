@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -358,20 +359,9 @@ func (manager *Manager) finishTask(task Task) error {
 		return errors.New("system update task state is invalid")
 	}
 	state.Task = &task
-	completedLatestTarget := sameTarget(state.LastCheck.Target, task.Target)
 	state.LastCheck.Current = task.Target
-	if completedLatestTarget {
-		state.LastCheck.Available = false
-	}
+	state.LastCheck.Available = semver.Compare(state.LastCheck.Target.Backend.Version, state.LastCheck.Current.Backend.Version) > 0
 	return manager.store.Save(state)
-}
-
-func sameTarget(left, right ImagePair) bool {
-	return sameTargetImage(left.Backend, right.Backend) && sameTargetImage(left.Web, right.Web)
-}
-
-func sameTargetImage(left, right Image) bool {
-	return left.Repository == right.Repository && left.Version == right.Version && left.Digest == right.Digest
 }
 
 func statusView(state PersistentState) StatusView {
