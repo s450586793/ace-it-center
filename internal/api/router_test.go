@@ -21,6 +21,7 @@ var fixedNow = time.Date(2026, 7, 26, 1, 0, 0, 0, time.UTC)
 
 type fakeRepository struct {
 	setup         bool
+	setupErr      error
 	owner         core.Owner
 	sessions      map[string]core.Owner
 	organizations []core.Organization
@@ -62,7 +63,30 @@ type fakeRepository struct {
 }
 
 func (f *fakeRepository) IsSetup(context.Context) (bool, error) {
-	return f.setup, nil
+	return f.setup, f.setupErr
+}
+
+func TestHealthReflectsDatabaseReachabilityWithoutSetupState(t *testing.T) {
+	t.Parallel()
+
+	for _, setup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("setup=%t", setup), func(t *testing.T) {
+			t.Parallel()
+			response := requestJSON(t, NewRouter(&fakeRepository{setup: setup}, func() time.Time { return fixedNow }), http.MethodGet, "/api/v1/health", nil, nil)
+			if response.Code != http.StatusOK || response.Body.String() != `{"status":"ok"}` {
+				t.Fatalf("health status=%d body=%q", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestHealthReportsUnavailableWhenDatabaseQueryFails(t *testing.T) {
+	t.Parallel()
+
+	response := requestJSON(t, NewRouter(&fakeRepository{setupErr: errors.New("postgres password database-secret")}, func() time.Time { return fixedNow }), http.MethodGet, "/api/v1/health", nil, nil)
+	if response.Code != http.StatusServiceUnavailable || response.Body.String() != `{"status":"unavailable"}` {
+		t.Fatalf("health status=%d body=%q", response.Code, response.Body.String())
+	}
 }
 
 func (f *fakeRepository) CreateOwner(_ context.Context, owner core.Owner) error {

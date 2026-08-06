@@ -28,6 +28,7 @@ func init() {
 type server struct {
 	repo                Repository
 	commands            CommandRepository
+	systemUpdater       SystemUpdater
 	now                 func() time.Time
 	secureCookies       bool
 	pairingLimiter      PairingLimiter
@@ -42,6 +43,7 @@ func NewRouter(repo Repository, now func() time.Time) http.Handler {
 type RouterOptions struct {
 	Now                 func() time.Time
 	SecureCookies       bool
+	SystemUpdater       SystemUpdater
 	PairingLimiter      PairingLimiter
 	CommandPollDuration time.Duration
 	CommandPollInterval time.Duration
@@ -133,7 +135,7 @@ func NewRouterWithOptions(repo Repository, options RouterOptions) http.Handler {
 	}
 	commandRepository, _ := repo.(CommandRepository)
 	s := &server{
-		repo: repo, commands: commandRepository, now: options.Now, secureCookies: options.SecureCookies,
+		repo: repo, commands: commandRepository, systemUpdater: options.SystemUpdater, now: options.Now, secureCookies: options.SecureCookies,
 		pairingLimiter: options.PairingLimiter, commandPollDuration: options.CommandPollDuration,
 		commandPollInterval: options.CommandPollInterval,
 	}
@@ -141,9 +143,7 @@ func NewRouterWithOptions(repo Repository, options RouterOptions) http.Handler {
 	router.Use(gin.Recovery())
 
 	api := router.Group("/api/v1")
-	api.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	api.GET("/health", s.health)
 	api.GET("/auth/status", s.authStatus)
 	api.POST("/auth/setup", s.setup)
 	api.POST("/auth/login", s.login)
@@ -171,6 +171,9 @@ func NewRouterWithOptions(repo Repository, options RouterOptions) http.Handler {
 	authenticated.GET("/commands", s.listCommands)
 	authenticated.GET("/commands/:id", s.getCommand)
 	authenticated.POST("/commands/:id/retry", s.retryCommand)
+	authenticated.GET("/system/update", s.systemUpdateStatus)
+	authenticated.POST("/system/update/check", s.checkSystemUpdate)
+	authenticated.POST("/system/update", s.startSystemUpdate)
 
 	api.POST("/agent/enroll", s.enrollAgent)
 	api.POST("/agent/pairings", s.createPairing)
@@ -181,6 +184,14 @@ func NewRouterWithOptions(repo Repository, options RouterOptions) http.Handler {
 	api.POST("/agent/commands/:id/start", s.startCommand)
 	api.POST("/agent/commands/:id/complete", s.completeCommand)
 	return router
+}
+
+func (s *server) health(c *gin.Context) {
+	if _, err := s.repo.IsSetup(c.Request.Context()); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (s *server) authStatus(c *gin.Context) {

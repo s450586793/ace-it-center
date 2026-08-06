@@ -15,6 +15,7 @@ import (
 	"aceitcenter.local/platform/internal/config"
 	"aceitcenter.local/platform/internal/maintenance"
 	postgresstore "aceitcenter.local/platform/internal/postgres"
+	"aceitcenter.local/platform/internal/updaterclient"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -49,7 +50,16 @@ func main() {
 	go maintenance.NewNetworkRetention(repository, logger, time.Now, 6*time.Hour, 90*24*time.Hour).Run(retentionContext)
 	go maintenance.NewPairingRetention(repository, logger, time.Now, 24*time.Hour, 30*24*time.Hour).Run(retentionContext)
 
-	handler := api.NewRouterWithOptions(repository, api.RouterOptions{SecureCookies: cfg.SecureCookies})
+	var systemUpdater api.SystemUpdater
+	if cfg.UpdaterURL != "" && cfg.UpdaterToken != "" {
+		client, err := updaterclient.New(cfg.UpdaterURL, cfg.UpdaterToken, http.DefaultClient)
+		if err != nil {
+			logger.Error("configure updater client")
+			os.Exit(1)
+		}
+		systemUpdater = client
+	}
+	handler := api.NewRouterWithOptions(repository, api.RouterOptions{SecureCookies: cfg.SecureCookies, SystemUpdater: systemUpdater})
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           handler,
