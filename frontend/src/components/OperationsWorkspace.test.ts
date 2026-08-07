@@ -54,25 +54,29 @@ describe('OperationsWorkspace', () => {
     vi.mocked(apiRequest).mockReset()
   })
 
-  it('shows the latest published Windows Agent version in the sidebar', async () => {
+  it('shows separate Web and latest published Agent versions in the sidebar', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      version: '0.4.1',
-      url: '/downloads/windows/stable/AceAgentSetup-windows-amd64-V0.4.1.exe',
+      version: '0.4.3',
+      url: '/downloads/windows/stable/AceAgentSetup-windows-amd64-V0.4.3.exe',
     }), { status: 200 }))
     const wrapper = mountWorkspace()
     await flushPromises()
 
     expect(fetch).toHaveBeenCalledWith('/downloads/windows/stable/latest.json', { credentials: 'same-origin' })
-    expect(wrapper.get('.sidebar-version').text()).toBe('ACE IT CENTER / V0.4.1')
+    expect(wrapper.get('[data-version="web"] dt').text()).toBe('WEB')
+    expect(wrapper.get('[data-version="web"] dd').text()).toBe('V0.4.2')
+    expect(wrapper.get('[data-version="agent"] dt').text()).toBe('AGENT')
+    expect(wrapper.get('[data-version="agent"] dd').text()).toBe('V0.4.3')
     wrapper.unmount()
   })
 
-  it('keeps the current stable version in the sidebar when the release manifest is unavailable', async () => {
+  it('keeps the Web version and avoids a stale Agent version when the release manifest is unavailable', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('manifest unavailable'))
     const wrapper = mountWorkspace()
     await flushPromises()
 
-    expect(wrapper.get('.sidebar-version').text()).toBe('ACE IT CENTER / V0.4.0')
+    expect(wrapper.get('[data-version="web"] dd').text()).toBe('V0.4.2')
+    expect(wrapper.get('[data-version="agent"] dd').text()).toBe('-')
     wrapper.unmount()
   })
 

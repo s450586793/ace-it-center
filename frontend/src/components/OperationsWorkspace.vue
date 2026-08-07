@@ -5,6 +5,7 @@ import {
   Sunny, SwitchButton, UploadFilled,
 } from '@element-plus/icons-vue'
 import { ElDialog } from 'element-plus'
+import packageMetadata from '../../package.json'
 import { apiRequest } from '../api'
 import { isNodeOnline } from '../lib/status'
 import type { Node, NodeGroup, Owner, PairingRequest } from '../types'
@@ -18,7 +19,7 @@ import SystemUpdate from './SystemUpdate.vue'
 type WorkspaceView = 'overview' | 'network' | 'commands' | 'pairings' | 'downloads' | 'updates'
 
 const releaseManifestPath = '/downloads/windows/stable/latest.json'
-const fallbackAgentVersion = '0.4.0'
+const webVersion = packageMetadata.version
 
 const props = defineProps<{
   owner: Owner
@@ -29,7 +30,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ refresh: []; logout: []; 'session-expired': [] }>()
 const now = ref(new Date())
-const latestAgentVersion = ref(fallbackAgentVersion)
+const latestAgentVersion = ref<string | null>(null)
 const activeView = ref<WorkspaceView>('overview')
 const mobileNav = ref(false)
 const darkMode = ref(false)
@@ -71,6 +72,7 @@ const dialogOpen = computed({
 const onlineCount = computed(() => props.nodes.filter(node => isNodeOnline(node.last_seen_at, now.value)).length)
 const offlineCount = computed(() => props.nodes.length - onlineCount.value)
 const pendingPairingCount = computed(() => props.pairings.filter(pairing => pairing.state === 'pending').length)
+const displayedAgentVersion = computed(() => latestAgentVersion.value ? `V${latestAgentVersion.value}` : '-')
 const pageTitle = computed(() => ({
   overview: { index: 'INFRASTRUCTURE / OVERVIEW', title: '设备运行总览' },
   network: { index: 'INFRASTRUCTURE / NETWORK', title: '网络监控' },
@@ -164,7 +166,10 @@ onBeforeUnmount(() => window.clearInterval(clock))
         <div><strong>{{ owner.username }}</strong><small>OWNER</small></div>
         <SwitchButton aria-hidden="true" />
       </button>
-      <small class="sidebar-version" title="最新客户端版本">ACE IT CENTER / V{{ latestAgentVersion }}</small>
+      <dl class="sidebar-versions" aria-label="版本信息">
+        <div data-version="web" title="当前 Web 版本"><dt>WEB</dt><dd>V{{ webVersion }}</dd></div>
+        <div data-version="agent" title="最新 Agent 版本"><dt>AGENT</dt><dd>{{ displayedAgentVersion }}</dd></div>
+      </dl>
     </aside>
 
     <div v-if="mobileNav" class="nav-scrim" @click="mobileNav = false"></div>
