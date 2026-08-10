@@ -254,15 +254,31 @@ Run: `git push origin main`
 
 Expected: `origin/main` 包含设计、计划和静默通知实现提交；工作区无意外文件被推送。
 
-- [ ] **Step 3: 在 DSM 项目目录同步精确提交**
+- [ ] **Step 3: 在 DSM 下载 GitHub 精确提交归档**
 
-Run: `ssh -p 9099 jarvis@ace-station.top 'cd /volume4/docker/docker/ace-it-center && git fetch origin main && git merge --ff-only origin/main'`
+DSM 没有 Git package，不能在 Compose 项目目录执行 `git fetch`。从 GitHub 下载刚推送 revision 的归档，在 `/volume4/docker/docker/ace-it-center` 下创建唯一 `.agent-build-<revision>` 临时目录，校验归档根目录后只解压源码：
 
-Expected: DSM 源码 fast-forward 到刚推送的 revision；不得输出 `.env` 或 secret 内容。
+```bash
+revision="${RELEASE_COMMIT:?RELEASE_COMMIT is required}"
+[[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+build_root="/volume4/docker/docker/ace-it-center/.agent-build-$revision"
+archive="$build_root/source.tar.gz"
+mkdir -m 0700 "$build_root"
+curl -fL --retry 5 \
+  "https://github.com/s450586793/ace-it-center/archive/$revision.tar.gz" \
+  -o "$archive"
+tar -tzf "$archive" | awk -v root="ace-it-center-$revision/" '
+  index($0, root) != 1 { exit 1 }
+'
+tar -xzf "$archive" -C "$build_root" --strip-components=1
+rm -f "$archive"
+```
+
+Expected: 临时目录中的源码 revision 与 GitHub 已推送 revision 一致；正式 Compose 项目目录、`.env`、release、secret 和数据目录均未被覆盖。无论构建成功或失败，后续都只删除经过固定前缀和精确 revision 校验的该临时目录。
 
 - [ ] **Step 4: 运行 DSM 一次性 builder 发布 0.4.10**
 
-在 DSM `/volume4/docker/docker/ace-it-center` 中设置 `RELEASE_VERSION=0.4.10`、当前 Git revision 和 UTC 构建时间，然后执行：
+在该临时源码目录中设置 `RELEASE_VERSION=0.4.10`、精确 Git revision、UTC 构建时间，以及正式项目绝对 `ACE_RELEASES_DIR`/`ACE_UPDATE_SIGNING_KEY`，然后执行：
 
 ```bash
 sudo --preserve-env=RELEASE_VERSION,RELEASE_COMMIT,RELEASE_BUILT_AT \
@@ -272,6 +288,8 @@ sudo --preserve-env=RELEASE_VERSION,RELEASE_COMMIT,RELEASE_BUILT_AT \
 ```
 
 Expected: builder 内完成 Go 构建、真实 Inno Setup 打包、旧版本覆盖契约、签名验证和 stable 原子发布；命令结束后无运行中的 `ace-it-center-windows-builder` 容器。
+
+构建结束后验证 `build_root` 仍符合 `/volume4/docker/docker/ace-it-center/.agent-build-$revision`，再删除该目录；不得删除正式项目目录或任何持久数据目录。
 
 - [ ] **Step 5: 验证公开 stable 发布物**
 
