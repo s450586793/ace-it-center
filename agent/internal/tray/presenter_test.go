@@ -107,39 +107,19 @@ func TestStatusModelPollFailureDisablesOnlineActionsAndRecovers(t *testing.T) {
 	}
 }
 
-func TestStatusModelSuppressesRepeatedNotificationAfterRecovery(t *testing.T) {
-	now := time.Date(2026, time.August, 5, 10, 23, 0, 0, time.Local)
-	model := newStatusModel(func() time.Time { return now }, 30*time.Minute)
-	errorStatus := controller.Status{State: "error", Error: "agent operation failed"}
-
-	first := model.Apply(errorStatus)
-	if first.Notification.Message == "" {
-		t.Fatal("first error did not produce a notification")
-	}
-	model.Apply(controller.Status{State: "online"})
-	now = now.Add(time.Minute)
-
-	repeated := model.Apply(errorStatus)
-	if repeated.Notification.Message != "" {
-		t.Fatalf("recovered error repeated notification = %#v", repeated.Notification)
-	}
-	if repeated.StatusText != "服务异常" || repeated.Icon != IconRed {
-		t.Fatalf("notification suppression hid error state: %#v", repeated)
-	}
-}
-
-func TestStatusModelAllowsNotificationAfterCooldown(t *testing.T) {
-	now := time.Date(2026, time.August, 5, 10, 23, 0, 0, time.Local)
-	model := newStatusModel(func() time.Time { return now }, 30*time.Minute)
-	errorStatus := controller.Status{State: "error", Error: "agent operation failed"}
-
-	model.Apply(errorStatus)
-	model.Apply(controller.Status{State: "online"})
-	now = now.Add(30 * time.Minute)
-
-	repeated := model.Apply(errorStatus)
-	if repeated.Notification.Message != "agent operation failed" {
-		t.Fatalf("notification after cooldown = %#v", repeated.Notification)
+func TestPresenterKeepsErrorAndUpdateStatusWithoutNotificationData(t *testing.T) {
+	for _, status := range []controller.Status{
+		{State: "error", Error: "agent operation failed"},
+		{State: "degraded", Error: "heartbeat timeout"},
+		{State: "updating"},
+	} {
+		encoded, err := json.Marshal(NewPresenter().View(status))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(bytes.ToLower(encoded), []byte("notification")) {
+			t.Fatalf("view exposes native notification data: %s", encoded)
+		}
 	}
 }
 

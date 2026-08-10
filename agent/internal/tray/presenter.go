@@ -10,15 +10,11 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"aceitcenter.local/platform/agent/internal/controller"
 )
 
-const (
-	DefaultServerURL            = "http://it.ace-station.top:1111"
-	defaultNotificationCooldown = 30 * time.Minute
-)
+const DefaultServerURL = "http://it.ace-station.top:1111"
 
 // Icon 是托盘生命周期状态使用的颜色语义。
 type Icon string
@@ -42,25 +38,17 @@ type Actions struct {
 	ExitTray            bool `json:"exit_tray"`
 }
 
-// Notification 描述需要通过原生通知区显示的安全消息。
-type Notification struct {
-	Title   string `json:"title,omitempty"`
-	Message string `json:"message,omitempty"`
-	Level   string `json:"level,omitempty"`
-}
-
 // View 是不包含 token 或 credential 的托盘展示快照。
 type View struct {
-	StatusText     string       `json:"status_text"`
-	Icon           Icon         `json:"icon"`
-	ShowEnrollment bool         `json:"show_enrollment"`
-	ServerURL      string       `json:"server_url,omitempty"`
-	Version        string       `json:"version,omitempty"`
-	NodeID         string       `json:"node_id,omitempty"`
-	LastHeartbeat  string       `json:"last_heartbeat,omitempty"`
-	Error          string       `json:"error,omitempty"`
-	Actions        Actions      `json:"actions"`
-	Notification   Notification `json:"notification,omitempty"`
+	StatusText     string  `json:"status_text"`
+	Icon           Icon    `json:"icon"`
+	ShowEnrollment bool    `json:"show_enrollment"`
+	ServerURL      string  `json:"server_url,omitempty"`
+	Version        string  `json:"version,omitempty"`
+	NodeID         string  `json:"node_id,omitempty"`
+	LastHeartbeat  string  `json:"last_heartbeat,omitempty"`
+	Error          string  `json:"error,omitempty"`
+	Actions        Actions `json:"actions"`
 }
 
 // Presenter 将 Service 状态映射为中文原生界面模型。
@@ -118,11 +106,9 @@ func (Presenter) View(status controller.Status) View {
 	case "degraded", "error":
 		view.StatusText = "服务异常"
 		view.Icon = IconRed
-		view.Notification = Notification{Title: "Ace Agent", Message: status.Error, Level: "error"}
 	case "updating":
 		view.StatusText = "正在更新"
 		view.Icon = IconBlue
-		view.Notification = Notification{Title: "Ace Agent", Message: "正在更新 Agent", Level: "info"}
 	case "stopped":
 		view.StatusText = "服务已停止"
 		view.Icon = IconGray
@@ -144,57 +130,26 @@ func (Presenter) View(status controller.Status) View {
 
 // StatusModel 保存最新一次状态轮询的展示结果，并在轮询失败时清除陈旧详情。
 type StatusModel struct {
-	presenter             Presenter
-	view                  View
-	now                   func() time.Time
-	notificationCooldown  time.Duration
-	notificationDisplayed map[string]time.Time
+	presenter Presenter
+	view      View
 }
 
 func NewStatusModel() *StatusModel {
-	return newStatusModel(time.Now, defaultNotificationCooldown)
-}
-
-func newStatusModel(now func() time.Time, notificationCooldown time.Duration) *StatusModel {
-	if now == nil {
-		now = time.Now
-	}
-	if notificationCooldown <= 0 {
-		notificationCooldown = defaultNotificationCooldown
-	}
 	presenter := NewPresenter()
 	return &StatusModel{
-		presenter:             presenter,
-		view:                  presenter.View(controller.Status{State: "unavailable"}),
-		now:                   now,
-		notificationCooldown:  notificationCooldown,
-		notificationDisplayed: make(map[string]time.Time),
+		presenter: presenter,
+		view:      presenter.View(controller.Status{State: "unavailable"}),
 	}
 }
 
 func (m *StatusModel) Apply(status controller.Status) View {
 	m.view = m.presenter.View(status)
-	m.filterNotification()
 	return m.view
 }
 
 func (m *StatusModel) PollFailed() View {
 	m.view = m.presenter.View(controller.Status{State: "unavailable"})
 	return m.view
-}
-
-func (m *StatusModel) filterNotification() {
-	notification := m.view.Notification
-	if notification.Message == "" {
-		return
-	}
-	key := notification.Level + "\x00" + notification.Message
-	now := m.now()
-	if displayedAt, exists := m.notificationDisplayed[key]; exists && now.Before(displayedAt.Add(m.notificationCooldown)) {
-		m.view.Notification = Notification{}
-		return
-	}
-	m.notificationDisplayed[key] = now
 }
 
 type backgroundCoordinator struct {
