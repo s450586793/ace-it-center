@@ -43,21 +43,22 @@ type trayRuntime struct {
 	clients     clientSource
 	form        *PairingForm
 
-	window          *walk.MainWindow
-	notifyIcon      *walk.NotifyIcon
-	statusLabel     *walk.Label
-	serverLabel     *walk.Label
-	versionLabel    *walk.Label
-	nodeLabel       *walk.Label
-	heartbeatLabel  *walk.Label
-	enrollmentGroup *walk.GroupBox
-	serverEdit      *walk.LineEdit
-	errorLabel      *walk.Label
-	submitButton    *walk.PushButton
-	openPlatformBtn *walk.PushButton
-	diagnosticsBtn  *walk.PushButton
-	updateBtn       *walk.PushButton
-	restartBtn      *walk.PushButton
+	window            *walk.MainWindow
+	notifyIcon        *walk.NotifyIcon
+	statusLabel       *walk.Label
+	serverLabel       *walk.Label
+	versionLabel      *walk.Label
+	nodeLabel         *walk.Label
+	heartbeatLabel    *walk.Label
+	serviceErrorLabel *walk.Label
+	enrollmentGroup   *walk.GroupBox
+	serverEdit        *walk.LineEdit
+	messageLabel      *walk.Label
+	submitButton      *walk.PushButton
+	openPlatformBtn   *walk.PushButton
+	diagnosticsBtn    *walk.PushButton
+	updateBtn         *walk.PushButton
+	restartBtn        *walk.PushButton
 
 	openPlatformAction *walk.Action
 	configureAction    *walk.Action
@@ -70,7 +71,6 @@ type trayRuntime struct {
 	enrollmentManuallyOpen bool
 	refreshing             atomic.Bool
 	quitting               atomic.Bool
-	lastNotification       string
 	lastActivation         activationResult
 	uiThreadID             uint32
 	shutdownErrMu          sync.Mutex
@@ -201,6 +201,7 @@ func (r *trayRuntime) buildWindow() error {
 			Label{AssignTo: &r.versionLabel, Text: "版本：-"},
 			Label{AssignTo: &r.nodeLabel, Text: "节点：-"},
 			Label{AssignTo: &r.heartbeatLabel, Text: "最近心跳：-"},
+			Label{AssignTo: &r.serviceErrorLabel, TextColor: walk.RGB(180, 35, 35)},
 			GroupBox{
 				AssignTo: &r.enrollmentGroup,
 				Title:    "接入 Ace IT Center",
@@ -211,10 +212,9 @@ func (r *trayRuntime) buildWindow() error {
 					LineEdit{AssignTo: &r.serverEdit, Text: DefaultServerURL},
 					HSpacer{},
 					PushButton{AssignTo: &r.submitButton, Text: "接入", OnClicked: r.submitPairing},
-					HSpacer{},
-					Label{AssignTo: &r.errorLabel, TextColor: walk.RGB(180, 35, 35)},
 				},
 			},
+			Label{AssignTo: &r.messageLabel},
 			Composite{
 				Layout: HBox{Spacing: 8},
 				Children: []Widget{
@@ -349,6 +349,7 @@ func (r *trayRuntime) applyView(view View) {
 	_ = r.versionLabel.SetText("版本：" + displayValue(view.Version))
 	_ = r.nodeLabel.SetText("节点：" + displayValue(view.NodeID))
 	_ = r.heartbeatLabel.SetText("最近心跳：" + displayValue(view.LastHeartbeat))
+	_ = r.serviceErrorLabel.SetText(view.Error)
 	if icon := r.icons[view.Icon]; icon != nil {
 		_ = r.notifyIcon.SetIcon(icon)
 	}
@@ -364,19 +365,6 @@ func (r *trayRuntime) applyView(view View) {
 	r.updateBtn.SetEnabled(view.Actions.CheckUpdate)
 	r.restartBtn.SetEnabled(view.Actions.RestartWorker)
 	r.updateEnrollmentControls()
-	if view.Notification.Message != "" {
-		key := view.Notification.Level + "\x00" + view.Notification.Message
-		if key != r.lastNotification {
-			r.lastNotification = key
-			if view.Notification.Level == "error" {
-				_ = r.notifyIcon.ShowError(view.Notification.Title, view.Notification.Message)
-			} else {
-				_ = r.notifyIcon.ShowInfo(view.Notification.Title, view.Notification.Message)
-			}
-		}
-	} else {
-		r.lastNotification = ""
-	}
 }
 
 func (r *trayRuntime) submitPairing() {
@@ -384,11 +372,11 @@ func (r *trayRuntime) submitPairing() {
 	serverURL, err := r.form.Begin()
 	if err != nil {
 		r.updateEnrollmentControls()
-		_ = r.errorLabel.SetText(r.form.Error)
+		r.showWindowMessage(r.form.Error, true)
 		return
 	}
 	r.updateEnrollmentControls()
-	_ = r.errorLabel.SetText("")
+	r.clearWindowMessage()
 	started := r.coordinator.Go(func(ctx context.Context) {
 		operationContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -404,13 +392,13 @@ func (r *trayRuntime) submitPairing() {
 		r.window.Synchronize(func() {
 			r.form.Complete(message)
 			r.updateEnrollmentControls()
-			_ = r.errorLabel.SetText(message)
-			if err == nil {
-				r.enrollmentManuallyOpen = false
-				r.applyView(r.statusModel.Apply(status))
-				_ = r.errorLabel.SetText("已发送配对请求，请在平台确认")
-				_ = r.notifyIcon.ShowInfo("Ace Agent", "已发送配对请求，请在平台确认")
+			if err != nil {
+				r.showWindowMessage(message, true)
+				return
 			}
+			r.enrollmentManuallyOpen = false
+			r.applyView(r.statusModel.Apply(status))
+			r.showWindowMessage("已发送配对请求，请在平台确认", false)
 		})
 	})
 	if !started {
@@ -441,7 +429,7 @@ func (r *trayRuntime) callStatusAction(method, successMessage string) {
 				return
 			}
 			r.applyView(r.statusModel.Apply(status))
-			_ = r.notifyIcon.ShowInfo("Ace Agent", successMessage)
+			r.showWindowMessage(successMessage, false)
 		})
 	})
 }
@@ -461,7 +449,7 @@ func (r *trayRuntime) checkUpdate() {
 			if result.Available {
 				message = "发现新版本 " + displayValue(result.Version)
 			}
-			_ = r.notifyIcon.ShowInfo("Ace Agent 更新", message)
+			r.showWindowMessage(message, false)
 		})
 	})
 }
@@ -479,7 +467,7 @@ func (r *trayRuntime) createDiagnostics() {
 				r.showSafeError(userFacingError(err))
 				return
 			}
-			_ = r.notifyIcon.ShowInfo("Ace Agent 诊断", "诊断包已创建："+result.Path)
+			r.showWindowMessage("诊断包已创建："+result.Path, false)
 		})
 	})
 }
@@ -525,15 +513,23 @@ func (r *trayRuntime) showWindow() {
 }
 
 func (r *trayRuntime) showSafeError(message string) {
+	r.showWindowMessage(message, true)
+}
+
+func (r *trayRuntime) showWindowMessage(message string, isError bool) {
 	if message == "" {
 		return
 	}
-	key := "error\x00" + message
-	if key != r.lastNotification {
-		r.lastNotification = key
-		_ = r.notifyIcon.ShowError("Ace Agent", message)
+	color := walk.RGB(55, 65, 81)
+	if isError {
+		color = walk.RGB(180, 35, 35)
 	}
-	_ = r.errorLabel.SetText(message)
+	r.messageLabel.SetTextColor(color)
+	_ = r.messageLabel.SetText(message)
+}
+
+func (r *trayRuntime) clearWindowMessage() {
+	_ = r.messageLabel.SetText("")
 }
 
 func (r *trayRuntime) exitTray() {

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +121,31 @@ func TestPresenterKeepsErrorAndUpdateStatusWithoutNotificationData(t *testing.T)
 		}
 		if bytes.Contains(bytes.ToLower(encoded), []byte("notification")) {
 			t.Fatalf("view exposes native notification data: %s", encoded)
+		}
+	}
+}
+
+func TestWindowsRuntimeUsesOnlyInWindowOperationFeedback(t *testing.T) {
+	source, err := os.ReadFile("native_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, forbidden := range []string{".ShowInfo(", ".ShowError("} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("Windows runtime still calls native notification API %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"serviceErrorLabel.SetText(view.Error)",
+		"showWindowMessage(successMessage, false)",
+		"showWindowMessage(message, false)",
+		"showWindowMessage(\"诊断包已创建：",
+		"result.Path, false)",
+		"showWindowMessage(message, true)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("Windows runtime is missing in-window feedback %q", required)
 		}
 	}
 }
