@@ -336,7 +336,7 @@ Expected: GitHub 与 DSM 都可追溯到同一 Agent release revision，发布�
 
 - [ ] **Step 1: 做发布后静态和测试复核**
 
-Run: `rg -n '\.ShowInfo\(|\.ShowError\(' agent`
+Run: `rg -n '\.ShowInfo\(|\.ShowError\(' agent --glob '!**/*_test.go'`
 
 Expected: 无匹配。
 
