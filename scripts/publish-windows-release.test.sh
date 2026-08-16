@@ -345,6 +345,13 @@ inno_setup_sha_line="$(grep -nF '"$INNO_SETUP_SHA256" /tmp/innosetup.exe | sha25
 grep -Fxq '        INNO_SETUP_URL: ${INNO_SETUP_URL:-https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe}' "$repo_root/deploy/windows-builder.compose.yaml" || fail "Windows builder Compose does not pass the configurable Inno Setup URL"
 pass_count=$((pass_count + 1))
 
+grep -Fq 'innoextract --silent --output-dir /tmp/innosetup-files /tmp/innosetup.exe' "$repo_root/deploy/windows-builder.Dockerfile" || fail "Windows builder does not extract the pinned Inno Setup compiler"
+grep -Fq 'cp -a /tmp/innosetup-files/app/. "$WINEPREFIX/drive_c/InnoSetup/"' "$repo_root/deploy/windows-builder.Dockerfile" || fail "Windows builder does not install the extracted Inno Setup compiler"
+if grep -Eq 'wine[[:space:]]+/tmp/innosetup\.exe' "$repo_root/deploy/windows-builder.Dockerfile"; then
+  fail "Windows builder still runs the Inno Setup GUI installer under Wine"
+fi
+pass_count=$((pass_count + 1))
+
 inventory_validator="$repo_root/scripts/validate-windows-installer-inventory.sh"
 valid_inventory="$test_root/valid-installer-inventory.txt"
 printf '%s\n' 'app/AceAgent.exe' 'app/AceAgentUpdater.exe' >"$valid_inventory"

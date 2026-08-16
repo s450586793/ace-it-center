@@ -60,6 +60,7 @@ ARG DEBIAN_SECURITY_MIRROR
 ENV DEBIAN_FRONTEND=noninteractive \
     WINEARCH=win64 \
     WINEDEBUG=-all \
+    WINEDLLOVERRIDES=mscoree,mshtml= \
     WINEPREFIX=/opt/wine
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -91,18 +92,21 @@ RUN --mount=type=cache,id=ace-bookworm-apt-lists,target=/var/lib/apt/lists,shari
        wine32:i386 \
        wine64 \
        xauth \
-       xvfb \
-    && curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 \
+       xvfb
+
+RUN curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 \
        "${INNO_SETUP_URL}" \
        -o /tmp/innosetup.exe \
     && printf '%s  %s\n' "$INNO_SETUP_SHA256" /tmp/innosetup.exe | sha256sum -c - \
     && mkdir -p "$WINEPREFIX" \
     && xvfb-run -a wineboot --init \
-    && xvfb-run -a wine /tmp/innosetup.exe \
-       /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=C:\\InnoSetup \
     && wineserver -w \
+    && innoextract --silent --output-dir /tmp/innosetup-files /tmp/innosetup.exe \
+    && mkdir -p "$WINEPREFIX/drive_c/InnoSetup" \
+    && cp -a /tmp/innosetup-files/app/. "$WINEPREFIX/drive_c/InnoSetup/" \
     && test -f "$WINEPREFIX/drive_c/InnoSetup/ISCC.exe" \
-    && rm -f /tmp/innosetup.exe
+    && rm -f /tmp/innosetup.exe \
+    && rm -rf /tmp/innosetup-files
 
 RUN ! ldd /usr/local/bin/innoextract | grep -Fq 'not found' \
     && innoextract --version | grep -Fq 'innoextract 1.10-dev'
