@@ -18,12 +18,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"aceitcenter.local/platform/internal/release"
 )
 
 const (
 	stableManifestPath = "/downloads/windows/stable/latest.json"
 	defaultHTTPTimeout = 30 * time.Second
 )
+
+var ErrNoUpdateAvailable = errors.New("no update available")
 
 // Candidate 是已通过认证且比当前 Agent 更新的发布版本。
 type Candidate struct {
@@ -83,6 +87,13 @@ func (c Checker) Check(ctx context.Context) (Candidate, error) {
 	}
 	if err := Verify(manifest, publicKey); err != nil {
 		return Candidate{}, fmt.Errorf("authenticate update manifest: %w", err)
+	}
+	comparison, err := release.CompareVersions(manifest.Version, c.CurrentVersion)
+	if err != nil {
+		return Candidate{}, fmt.Errorf("compare update versions: %w", err)
+	}
+	if comparison <= 0 {
+		return Candidate{}, ErrNoUpdateAvailable
 	}
 	if err := ValidateCandidate(manifest, c.CurrentVersion, c.CurrentOS, c.Origin); err != nil {
 		return Candidate{}, fmt.Errorf("validate update candidate: %w", err)

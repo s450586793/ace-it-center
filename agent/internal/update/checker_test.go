@@ -59,6 +59,30 @@ func TestCheckerRejectsInvalidSignatureAndUnsafeVersion(t *testing.T) {
 	}
 }
 
+func TestCheckerReturnsNoUpdateOnlyAfterAuthenticatingCurrentVersion(t *testing.T) {
+	checker, server, _ := newCheckerServer(t, []byte("installer"), func(manifest *Manifest) {
+		manifest.Version = "0.1.0"
+	})
+	defer server.Close()
+
+	if _, err := checker.Check(context.Background()); !errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("Check() error = %v, want ErrNoUpdateAvailable", err)
+	}
+}
+
+func TestCheckerDoesNotClassifyInvalidSignatureAsNoUpdate(t *testing.T) {
+	checker, server, _ := newCheckerServer(t, []byte("installer"), func(manifest *Manifest) {
+		manifest.Version = "0.1.0"
+		manifest.Signature = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
+	})
+	defer server.Close()
+
+	_, err := checker.Check(context.Background())
+	if err == nil || errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("Check() error = %v, want authentication error", err)
+	}
+}
+
 func TestCheckerRejectsMissingOrNonCanonicalPublicKey(t *testing.T) {
 	checker, server, _ := newCheckerServer(t, []byte("installer"), nil)
 	defer server.Close()

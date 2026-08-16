@@ -112,10 +112,11 @@ func ValidateCandidate(manifest Manifest, currentVersion, currentOS, origin stri
 	if err := validateManifest(manifest); err != nil {
 		return err
 	}
-	if !validSemver(currentVersion) {
-		return errors.New("current version is not valid semantic versioning")
+	comparison, err := CompareVersions(manifest.Version, currentVersion)
+	if err != nil {
+		return err
 	}
-	if semver.Compare("v"+manifest.Version, "v"+currentVersion) <= 0 {
+	if comparison <= 0 {
 		return errors.New("candidate version must be newer than the installed version")
 	}
 	minimum, err := parseWindowsVersion(manifest.MinimumOS)
@@ -137,6 +138,13 @@ func ValidateCandidate(manifest Manifest, currentVersion, currentOS, origin stri
 		return err
 	}
 	return nil
+}
+
+func CompareVersions(candidate, current string) (int, error) {
+	if !validSemver(candidate) || !validSemver(current) {
+		return 0, errors.New("versions must use valid semantic versioning")
+	}
+	return semver.Compare("v"+candidate, "v"+current), nil
 }
 
 // ValidateManifestOrigin verifies the manifest fields and binds its artifact URL
