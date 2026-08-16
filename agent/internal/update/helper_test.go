@@ -44,12 +44,6 @@ type fakeHelperRuntime struct {
 	released    bool
 }
 
-type fakeSelfCleanupOperations struct {
-	events   []string
-	startErr error
-	delayErr error
-}
-
 type fakeExecutionLockObjectOperations struct {
 	handle       uintptr
 	createErr    error
@@ -72,17 +66,7 @@ func (operations *fakeExecutionLockObjectOperations) IsAlreadyExists(err error) 
 	return errors.Is(err, operations.existingErr)
 }
 
-func (f *fakeSelfCleanupOperations) StartDeferredRemoval(string) error {
-	f.events = append(f.events, "start")
-	return f.startErr
-}
-
-func (f *fakeSelfCleanupOperations) DelayRemovalUntilReboot(string) error {
-	f.events = append(f.events, "delay")
-	return f.delayErr
-}
-
-func (f *fakeHelperRuntime) ValidateRunningHelper(_, _ string) error {
+func (f *fakeHelperRuntime) ValidateRunningUpdater(string) error {
 	f.validated = true
 	return f.validateErr
 }
@@ -627,23 +611,6 @@ func TestHelperAttemptsServiceRecoveryWhenLastKnownGoodRestoreFails(t *testing.T
 	}
 }
 
-func TestHelperReportsSelfCleanupWarningWithoutFailingHealthyAgent(t *testing.T) {
-	cleanupErr := errors.New("self cleanup unavailable")
-	options := testHelperOptions(&fakeHelperOperations{})
-	options.selfCleanup = func() error { return cleanupErr }
-	var warning error
-	options.CleanupWarning = func(err error) { warning = err }
-
-	err := RunHelper(context.Background(), options)
-
-	if err != nil {
-		t.Fatalf("RunHelper() error = %v", err)
-	}
-	if !errors.Is(warning, cleanupErr) {
-		t.Fatalf("self cleanup warning = %v", warning)
-	}
-}
-
 func TestHelperRecordsCleanupMarkerWhenWarningCallbackIsPresent(t *testing.T) {
 	cleanupErr := errors.New("cleanup denied")
 	options := testHelperOptions(&fakeHelperOperations{cleanupErr: cleanupErr})
@@ -660,115 +627,50 @@ func TestHelperRecordsCleanupMarkerWhenWarningCallbackIsPresent(t *testing.T) {
 	}
 }
 
-func TestHelperSchedulesSelfCleanupWhenExecutionLockIsUnavailable(t *testing.T) {
-	lockErr := errors.New("another helper is running")
-	options := testHelperOptions(&fakeHelperOperations{})
-	options.Runtime = &fakeHelperRuntime{lockErr: lockErr}
-	cleanupCalled := false
-	options.selfCleanup = func() error {
-		cleanupCalled = true
-		return nil
-	}
-
-	err := RunHelper(context.Background(), options)
-
-	if !errors.Is(err, lockErr) {
-		t.Fatalf("RunHelper() error = %v", err)
-	}
-	if !cleanupCalled {
-		t.Fatal("helper copy was not scheduled for cleanup after lock rejection")
-	}
-}
-
-func TestScheduleSelfCleanupFallsBackToDeleteOnReboot(t *testing.T) {
-	startErr := errors.New("PowerShell unavailable")
-	operations := &fakeSelfCleanupOperations{startErr: startErr}
-
-	err := scheduleSelfCleanup("/staging/helper.exe", operations)
-
-	if err != nil {
-		t.Fatalf("scheduleSelfCleanup() error = %v", err)
-	}
-	if !slices.Equal(operations.events, []string{"start", "delay"}) {
-		t.Fatalf("events = %v", operations.events)
-	}
-}
-
-func TestScheduleSelfCleanupKeepsRebootFallbackAfterDeferredRemovalStarts(t *testing.T) {
-	operations := &fakeSelfCleanupOperations{}
-
-	if err := scheduleSelfCleanup("/staging/helper.exe", operations); err != nil {
-		t.Fatalf("scheduleSelfCleanup() error = %v", err)
-	}
-	if !slices.Equal(operations.events, []string{"start", "delay"}) {
-		t.Fatalf("events = %v", operations.events)
-	}
-}
-
-func TestScheduleSelfCleanupReportsPrimaryAndFallbackFailures(t *testing.T) {
-	startErr := errors.New("PowerShell unavailable")
-	delayErr := errors.New("MoveFileEx denied")
-	operations := &fakeSelfCleanupOperations{startErr: startErr, delayErr: delayErr}
-
-	err := scheduleSelfCleanup("/staging/helper.exe", operations)
-
-	if !errors.Is(err, startErr) || !errors.Is(err, delayErr) {
-		t.Fatalf("scheduleSelfCleanup() error = %v", err)
-	}
-}
-
-func TestHelperIdentityRejectsInstalledExecutableHardlinkAndOutsideStaging(t *testing.T) {
+func TestUpdaterIdentityRejectsAgentHardlinkPendingAndOutsidePath(t *testing.T) {
 	root := t.TempDir()
 	installed := filepath.Join(root, "installed", "AceAgent.exe")
-	staging := filepath.Join(root, "ProgramData", "updates")
 	if err := os.MkdirAll(filepath.Dir(installed), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(staging, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(installed, []byte("agent"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	hardlink := filepath.Join(staging, "hardlink.exe")
-	if err := os.Link(installed, hardlink); err != nil {
+	expected := filepath.Join(filepath.Dir(installed), "AceAgentUpdater.exe")
+	if err := os.Link(installed, expected); err != nil {
+		t.Fatal(err)
+	}
+	pending := filepath.Join(filepath.Dir(installed), "AceAgentUpdater.next.exe")
+	if err := os.WriteFile(pending, []byte("pending"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(root, "outside.exe")
-	if err := os.WriteFile(outside, []byte("copy"), 0o700); err != nil {
+	if err := os.WriteFile(outside, []byte("updater"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, running := range []string{installed, hardlink, outside} {
+	for _, running := range []string{installed, expected, pending, outside} {
 		operations := filesystemIdentityOperations{running: running}
-		if err := validateHelperIdentity(installed, staging, operations); err == nil {
-			t.Fatalf("running helper %q was accepted", running)
+		if err := validateUpdaterIdentity(installed, operations); err == nil {
+			t.Fatalf("running updater %q was accepted", running)
 		}
 	}
 }
 
-func TestHelperIdentityAcceptsDistinctStagedCopyThroughDirectoryAlias(t *testing.T) {
+func TestUpdaterIdentityAcceptsOnlyFixedSiblingExecutable(t *testing.T) {
 	root := t.TempDir()
-	installed := filepath.Join(root, "installed.exe")
-	staging := filepath.Join(root, "updates")
-	alias := filepath.Join(root, "updates-alias")
-	if err := os.Mkdir(staging, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	installed := filepath.Join(root, "AceAgent.exe")
 	if err := os.WriteFile(installed, []byte("old"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	helper := filepath.Join(staging, ".AceAgent-update-helper-123.exe")
-	if err := os.WriteFile(helper, []byte("copy"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(staging, alias); err != nil {
+	updater := filepath.Join(root, "AceAgentUpdater.exe")
+	if err := os.WriteFile(updater, []byte("updater"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	operations := filesystemIdentityOperations{running: filepath.Join(alias, ".AceAgent-update-helper-123.exe")}
-	if err := validateHelperIdentity(installed, alias, operations); err != nil {
-		t.Fatalf("validateHelperIdentity() error = %v", err)
+	operations := filesystemIdentityOperations{running: updater}
+	if err := validateUpdaterIdentity(installed, operations); err != nil {
+		t.Fatalf("validateUpdaterIdentity() error = %v", err)
 	}
 }
 
@@ -794,26 +696,6 @@ func TestHelperIdentityAndCrossProcessLockRunBeforeServiceMutation(t *testing.T)
 	}
 	if len(ops.events) != 0 {
 		t.Fatalf("service mutated before helper lock: %v", ops.events)
-	}
-}
-
-func TestHelperDoesNotScheduleSelfCleanupWhenIdentityValidationFails(t *testing.T) {
-	identityErr := errors.New("running executable is installed Agent")
-	options := testHelperOptions(&fakeHelperOperations{})
-	options.Runtime = &fakeHelperRuntime{validateErr: identityErr}
-	cleanupCalled := false
-	options.selfCleanup = func() error {
-		cleanupCalled = true
-		return nil
-	}
-
-	err := RunHelper(context.Background(), options)
-
-	if !errors.Is(err, identityErr) {
-		t.Fatalf("RunHelper() error = %v", err)
-	}
-	if cleanupCalled {
-		t.Fatal("identity rejection scheduled deletion of the running executable")
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	agentclient "aceitcenter.local/platform/agent/internal/agent"
+	"aceitcenter.local/platform/agent/internal/agentpaths"
 	"aceitcenter.local/platform/agent/internal/app"
 	"aceitcenter.local/platform/agent/internal/buildinfo"
 	agentcommand "aceitcenter.local/platform/agent/internal/command"
@@ -89,7 +90,7 @@ func runTray(args []string) error {
 	defer stop()
 	return agenttray.Run(ctx, nil, agenttray.Options{
 		Dial:         ipc.DialWindows,
-		LogDirectory: filepath.Dir(serviceLogPath()),
+		LogDirectory: filepath.Dir(agentpaths.AgentLogPath(defaultAgentConfigPath())),
 		ShowOnStart:  showOnStart,
 	})
 }
@@ -117,7 +118,7 @@ func runService(args []string) error {
 
 func runWindowsService() error {
 	logger, closer, err := logging.New(logging.Options{
-		Path:  serviceLogPath(),
+		Path:  agentpaths.AgentLogPath(defaultAgentConfigPath()),
 		Level: slog.LevelInfo,
 	})
 	if err != nil {
@@ -125,7 +126,7 @@ func runWindowsService() error {
 	}
 	defer closer.Close()
 
-	if err := windowsservice.Run(context.Background(), newServiceController(defaultConfigPath(), logger)); err != nil {
+	if err := windowsservice.Run(context.Background(), newServiceController(defaultAgentConfigPath(), logger)); err != nil {
 		logger.Error("Windows Service stopped unexpectedly")
 		return err
 	}
@@ -155,7 +156,7 @@ func newServiceController(configPath string, logger *slog.Logger) *controller.Co
 			if err != nil {
 				return controller.UpdateStatus{}, fmt.Errorf("locate Agent executable: %w", err)
 			}
-			stagingDirectory := updateStagingDirectory(configPath)
+			stagingDirectory := agentpaths.StagingDirectory(configPath)
 			checker := update.Checker{
 				Origin:         config.ServerURL,
 				CurrentVersion: buildinfo.Version,
@@ -228,14 +229,14 @@ func executeServiceUpdate(ctx context.Context, runtime serviceUpdateRuntime) (co
 
 func runUpdateHelper(_ *slog.Logger, args []string) error {
 	logger, closer, err := logging.New(logging.Options{
-		Path:  updateLogPath(),
+		Path:  agentpaths.UpdateLogPath(defaultAgentConfigPath()),
 		Level: slog.LevelInfo,
 	})
 	if err != nil {
 		return fmt.Errorf("configure update logging: %w", err)
 	}
 	defer closer.Close()
-	return runUpdateHelperWithRunner(context.Background(), args, defaultConfigPath(), logger, update.RunHelper)
+	return runUpdateHelperWithRunner(context.Background(), args, defaultAgentConfigPath(), logger, update.RunHelper)
 }
 
 func runUpdateHelperWithRunner(ctx context.Context, args []string, configPath string, logger *slog.Logger, runner func(context.Context, update.HelperOptions) error) error {
@@ -321,13 +322,9 @@ func updateRecoveryFailureStage(err error) string {
 }
 
 func configureUpdateHelperOptions(options update.HelperOptions, configPath string, warning func(error)) update.HelperOptions {
-	options.StagingDir = updateStagingDirectory(configPath)
+	options.StagingDir = agentpaths.StagingDirectory(configPath)
 	options.CleanupWarning = warning
 	return options
-}
-
-func updateStagingDirectory(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), "updates")
 }
 
 func parseUpdateHelperOptions(args []string) (update.HelperOptions, error) {
@@ -454,7 +451,7 @@ func (w serviceWorker) Run(ctx context.Context, config agentclient.Config, inter
 		Collect: collector.Collect,
 		Version: buildinfo.Version,
 		LogUploader: func(ctx context.Context, config agentclient.Config) error {
-			return uploadServiceLogs(ctx, client, config, serviceLogPath(), updateLogPath())
+			return uploadServiceLogs(ctx, client, config, agentpaths.AgentLogPath(defaultAgentConfigPath()), agentpaths.UpdateLogPath(defaultAgentConfigPath()))
 		},
 		LogErrorSink: func(message string) {
 			if w.logger != nil {
@@ -515,7 +512,7 @@ func newServiceCommandLoop(
 func runForeground(logger *slog.Logger, args []string) error {
 	serverURL := flag.String("server", "", "Ace IT Center server URL")
 	enrollmentToken := flag.String("enrollment", "", "one-time enrollment token")
-	configPath := flag.String("config", defaultConfigPath(), "agent configuration path")
+	configPath := flag.String("config", defaultAgentConfigPath(), "agent configuration path")
 	once := flag.Bool("once", false, "send one heartbeat and exit")
 	interval := flag.Duration("interval", 30*time.Second, "heartbeat interval")
 	if err := flag.CommandLine.Parse(args); err != nil {
@@ -564,7 +561,7 @@ func runForeground(logger *slog.Logger, args []string) error {
 		Collect: collector.Collect,
 		Version: buildinfo.Version,
 		LogUploader: func(ctx context.Context, config agentclient.Config) error {
-			return uploadServiceLogs(ctx, client, config, serviceLogPath(), updateLogPath())
+			return uploadServiceLogs(ctx, client, config, agentpaths.AgentLogPath(defaultAgentConfigPath()), agentpaths.UpdateLogPath(defaultAgentConfigPath()))
 		},
 		LogErrorSink: func(message string) {
 			logger.Warn("upload service logs", "error", message)
@@ -627,25 +624,10 @@ func runForegroundLifecycleForConfig(ctx context.Context, config agentclient.Con
 	return true, nil
 }
 
-func defaultConfigPath() string {
-	if runtime.GOOS == "windows" {
-		base := os.Getenv("ProgramData")
-		if base == "" {
-			base = `C:\ProgramData`
-		}
-		return filepath.Join(base, "AceITCenter", "agent.json")
-	}
-	return "/etc/ace-it-center/agent.json"
+func defaultAgentConfigPath() string {
+	return agentpaths.DefaultConfigPath(runtime.GOOS, os.Getenv("ProgramData"))
 }
 
 func networkUsagePath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "network-usage.json")
-}
-
-func serviceLogPath() string {
-	return filepath.Join(filepath.Dir(defaultConfigPath()), "logs", "agent.log")
-}
-
-func updateLogPath() string {
-	return filepath.Join(filepath.Dir(defaultConfigPath()), "logs", "update.log")
 }

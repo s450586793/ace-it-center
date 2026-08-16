@@ -26,7 +26,6 @@ func TestParseModeRecognizesWindowsModes(t *testing.T) {
 		{arg: "tray", want: ModeTray},
 		{arg: "diagnose", want: ModeDiagnose},
 		{arg: "version", want: ModeVersion},
-		{arg: "update-helper", want: ModeUpdateHelper},
 	}
 
 	for _, test := range tests {
@@ -40,8 +39,10 @@ func TestParseModeRecognizesWindowsModes(t *testing.T) {
 }
 
 func TestParseModeRejectsUnknownWindowsMode(t *testing.T) {
-	_, _, err := ParseMode("windows", []string{"unknown"})
-	if err == nil {
-		t.Fatal("expected unknown mode error")
+	for _, mode := range []string{"unknown", "update-helper"} {
+		_, _, err := ParseMode("windows", []string{mode})
+		if err == nil {
+			t.Fatalf("expected %q mode error", mode)
+		}
 	}
 }

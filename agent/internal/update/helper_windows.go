@@ -43,8 +43,6 @@ type windowsHelperRuntime struct{}
 
 type windowsIdentityOperations struct{}
 
-type windowsSelfCleanupOperations struct{}
-
 type nativeWindowsExecutionLockOperations struct{}
 
 func defaultHelperOperations(options HelperOptions) HelperOperations {
@@ -304,8 +302,8 @@ func (windowsLaunchOperations) StartDetached(ctx context.Context, executable str
 
 func (windowsLaunchOperations) Remove(path string) error { return os.Remove(path) }
 
-func (windowsHelperRuntime) ValidateRunningHelper(installedExecutable, stagingDirectory string) error {
-	return validateHelperIdentity(installedExecutable, stagingDirectory, windowsIdentityOperations{})
+func (windowsHelperRuntime) ValidateRunningUpdater(installedExecutable string) error {
+	return validateUpdaterIdentity(installedExecutable, windowsIdentityOperations{})
 }
 
 func (windowsHelperRuntime) AcquireExecutionLock() (func() error, error) {
@@ -481,32 +479,6 @@ func boundedProcessOutput(output []byte) string {
 		output = output[:maximum]
 	}
 	return string(output)
-}
-
-func cleanupRunningHelper() error {
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	return scheduleSelfCleanup(executable, windowsSelfCleanupOperations{})
-}
-
-func (windowsSelfCleanupOperations) StartDeferredRemoval(executable string) error {
-	script := `param([string]$Path); Start-Sleep -Milliseconds 500; Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue`
-	command := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script, executable)
-	command.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS, HideWindow: true}
-	if err := command.Start(); err != nil {
-		return err
-	}
-	return command.Process.Release()
-}
-
-func (windowsSelfCleanupOperations) DelayRemovalUntilReboot(path string) error {
-	pointer, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return err
-	}
-	return windows.MoveFileEx(pointer, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT)
 }
 
 func recordCleanupWarning(stagingDirectory string, _ error) {

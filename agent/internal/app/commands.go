@@ -23,7 +23,7 @@ func ParseMode(goos string, args []string) (Mode, []string, error) {
 	}
 
 	switch args[0] {
-	case "service", "tray", "diagnose", "version", "update-helper":
+	case "service", "tray", "diagnose", "version":
 		return Mode(args[0]), args[1:], nil
 	default:
 		return "", nil, fmt.Errorf("unknown Ace Agent mode %q", args[0])

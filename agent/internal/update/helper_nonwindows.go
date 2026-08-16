@@ -13,8 +13,6 @@ func defaultLaunchOperations() LaunchOperations { return nil }
 
 func defaultHelperRuntime() HelperRuntime { return nil }
 
-func cleanupRunningHelper() error { return nil }
-
 func recordCleanupWarning(string, error) {}
 
 func CurrentOSVersion() (string, error) {

@@ -36,9 +36,9 @@ type trayLifecycleOperations interface {
 	StartTray(context.Context, string) error
 }
 
-// HelperRuntime 验证 helper 文件身份并提供跨进程执行锁。
+// HelperRuntime 验证固定 Updater 文件身份并提供跨进程执行锁。
 type HelperRuntime interface {
-	ValidateRunningHelper(installedExecutable, stagingDirectory string) error
+	ValidateRunningUpdater(installedExecutable string) error
 	AcquireExecutionLock() (release func() error, err error)
 }
 
@@ -75,11 +75,6 @@ type helperIdentityOperations interface {
 	SameFile(left, right string) (bool, error)
 }
 
-type selfCleanupOperations interface {
-	StartDeferredRemoval(string) error
-	DelayRemovalUntilReboot(string) error
-}
-
 // HelperOptions 只包含本地路径和发布元数据，绝不能包含 enrollment token 或 Agent credential。
 type HelperOptions struct {
 	InstallerPath    string
@@ -92,7 +87,6 @@ type HelperOptions struct {
 	Operations       HelperOperations
 	Runtime          HelperRuntime
 	CleanupWarning   func(error)
-	selfCleanup      func() error
 	cleanupMarker    func(string, error)
 	restoreTimeout   time.Duration
 	restoreInterval  time.Duration
@@ -166,11 +160,6 @@ func RunHelper(ctx context.Context, options HelperOptions) (resultErr error) {
 	if err := validateHelperOptions(options); err != nil {
 		return err
 	}
-	usingDefaultOperations := options.Operations == nil
-	selfCleanup := options.selfCleanup
-	if selfCleanup == nil && usingDefaultOperations {
-		selfCleanup = cleanupRunningHelper
-	}
 	runtime := options.Runtime
 	if runtime == nil {
 		runtime = defaultHelperRuntime()
@@ -178,15 +167,8 @@ func RunHelper(ctx context.Context, options HelperOptions) (resultErr error) {
 			return errors.New("update helper runtime is unavailable on this platform")
 		}
 	}
-	if err := runtime.ValidateRunningHelper(options.ExecutablePath, options.StagingDir); err != nil {
-		return fmt.Errorf("validate running update helper: %w", err)
-	}
-	if selfCleanup != nil {
-		defer func() {
-			if err := selfCleanup(); err != nil {
-				reportCleanupWarning(options, fmt.Errorf("schedule running helper cleanup: %w", err))
-			}
-		}()
+	if err := runtime.ValidateRunningUpdater(options.ExecutablePath); err != nil {
+		return fmt.Errorf("validate running updater: %w", err)
 	}
 	release, err := runtime.AcquireExecutionLock()
 	if err != nil {
@@ -382,40 +364,36 @@ func validateHelperOptions(options HelperOptions) error {
 	return nil
 }
 
-func validateHelperIdentity(installedExecutable, stagingDirectory string, operations helperIdentityOperations) error {
+func validateUpdaterIdentity(installedExecutable string, operations helperIdentityOperations) error {
 	if operations == nil {
-		return errors.New("helper identity operations are required")
+		return errors.New("updater identity operations are required")
 	}
 	runningExecutable, err := operations.RunningExecutable()
 	if err != nil {
-		return fmt.Errorf("locate running helper executable: %w", err)
+		return fmt.Errorf("locate running updater executable: %w", err)
 	}
 	runningFinal, err := operations.FinalPath(runningExecutable)
 	if err != nil {
-		return fmt.Errorf("resolve running helper path: %w", err)
+		return fmt.Errorf("resolve running updater path: %w", err)
 	}
 	installedFinal, err := operations.FinalPath(installedExecutable)
 	if err != nil {
 		return fmt.Errorf("resolve installed Agent path: %w", err)
 	}
-	stagingFinal, err := operations.FinalPath(stagingDirectory)
+	expectedUpdater := filepath.Join(filepath.Dir(installedExecutable), "AceAgentUpdater.exe")
+	expectedFinal, err := operations.FinalPath(expectedUpdater)
 	if err != nil {
-		return fmt.Errorf("resolve update staging path: %w", err)
+		return fmt.Errorf("resolve fixed updater path: %w", err)
+	}
+	if !strings.EqualFold(filepath.Clean(runningFinal), filepath.Clean(expectedFinal)) {
+		return errors.New("running executable is not the fixed Agent updater")
 	}
 	same, err := operations.SameFile(runningFinal, installedFinal)
 	if err != nil {
-		return fmt.Errorf("compare helper and installed Agent identity: %w", err)
+		return fmt.Errorf("compare updater and installed Agent identity: %w", err)
 	}
 	if same {
-		return errors.New("installed Agent executable cannot run as update helper")
-	}
-	relative, err := filepath.Rel(stagingFinal, runningFinal)
-	if err != nil || relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return errors.New("running update helper is outside the expected staging directory")
-	}
-	name := filepath.Base(runningFinal)
-	if !strings.HasPrefix(name, ".AceAgent-update-helper-") || !strings.HasSuffix(strings.ToLower(name), ".exe") {
-		return errors.New("running executable is not a staged update helper")
+		return errors.New("fixed updater cannot be a hardlink to the installed Agent")
 	}
 	return nil
 }
@@ -432,24 +410,6 @@ func reportCleanupWarning(options HelperOptions, err error) {
 		marker = recordCleanupWarning
 	}
 	marker(options.StagingDir, err)
-}
-
-func scheduleSelfCleanup(path string, operations selfCleanupOperations) error {
-	if operations == nil {
-		return errors.New("self cleanup operations are required")
-	}
-	startErr := operations.StartDeferredRemoval(path)
-	delayErr := operations.DelayRemovalUntilReboot(path)
-	if delayErr == nil {
-		return nil
-	}
-	if startErr == nil {
-		return fmt.Errorf("schedule helper removal at reboot: %w", delayErr)
-	}
-	return errors.Join(
-		fmt.Errorf("start deferred helper removal: %w", startErr),
-		fmt.Errorf("schedule helper removal at reboot: %w", delayErr),
-	)
 }
 
 func wrapOptional(operation string, err error) error {
