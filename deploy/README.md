@@ -134,6 +134,19 @@ sudo --preserve-env=RELEASE_VERSION,RELEASE_COMMIT,RELEASE_BUILT_AT \
 
 builder 会从只读 private key 派生 public key 并编译进 Agent 和固定 Updater，使用真实 ISCC 生成 installer，检查 inventory 同时包含两个 EXE 且不包含 WinDivert 或 `.sys` 驱动，签名并验证 `latest.json`，最后原子发布到 `${ACE_RELEASES_DIR}/windows/stable`。它拒绝 downgrade 和覆盖同版本目录。成功后不存在运行中的 builder container；builder image 和 BuildKit cache 可删除，持久 release 不受影响。
 
+### Windows 更新链路实机验证（2026-08-16）
+
+旧版更新方式由 Agent 自身复制出随机名称的 `.AceAgent-update-helper-*.exe` 后执行升级。这会增加杀毒软件启发式误报、文件锁、备份失败和 Service 恢复的不确定性。当前更新链路已改为安装目录中的固定 `AceAgentUpdater.exe`，不加壳、不混淆，并继续校验 release manifest 的 Ed25519 签名和安装包 SHA-256。
+
+Windows builder 曾因 Wine 中运行 Inno Setup GUI 安装器不稳定而阻塞；下载文件及 SHA-256 校验本身正常。commit `9f3d4665b2cab0adafcad29957d494156fee0876` 将 Inno Setup 固定为 `6.3.3`，改用固定版本的 `innoextract` 提取 `ISCC.exe`，并拆分 Wine 依赖层和 Inno 准备层缓存。修复后的发布结果如下：
+
+- `V0.4.11`：`6853190` bytes，SHA-256 `036956110be559e67b1a963845ee1a941528b0a5da417efb96a223e39c8f76de`。`412-itx` 和 `ace-pc` 均通过原有小时级定时检查从 `0.4.10` 自动升级到 `0.4.11`，由此安装固定 Updater。
+- `V0.4.12`：`6852582` bytes，SHA-256 `171610e4bf383a95021451087b73191f0d6f4177c33dfcaf545bea35ac01c98b`。`412-itx` 通过小时级定时检查升级，`ace-pc` 通过 Agent Named Pipe 的正式 `update.check` 路径触发升级；两台均完整下载安装包并由新 Agent 再次读取 `latest.json`。
+
+升级后的 Command Center 只读检查确认两台设备均满足：Agent `0.4.12`、Updater `0.4.12`、Service `Running`、`AceAgentUpdater.next.exe` 不存在。每台仍只有升级到 `V0.4.11` 时留下的 1 个旧随机 helper，文件名及数量在 `V0.4.12` 升级后未变化，证明固定 Updater 没有再创建随机 helper。Agent 日志上传快照中没有 `updater maintenance failed` 记录。
+
+以上调整降低了火绒等安全软件对自复制、随机名称执行文件的启发式告警概率，但未提供 Authenticode 信任。正式代码签名证书仍是进一步降低误报的必要步骤。
+
 Web 以只读方式挂载 `${ACE_RELEASES_DIR}/windows`。versioned installer 使用 immutable cache，stable alias 和 `latest.json` 使用 no-cache；发布新 release 不需要重建 Web image。
 
 ## HTTPS 切换
