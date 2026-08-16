@@ -336,4 +336,22 @@ goproxy_run_line="$(grep -nFx 'RUN GOPROXY="${GOPROXY}" go mod download' "$repo_
 grep -Fxq '        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}' "$repo_root/deploy/windows-builder.compose.yaml" || fail "Windows builder Compose does not provide the DSM GOPROXY default"
 pass_count=$((pass_count + 1))
 
+inventory_validator="$repo_root/scripts/validate-windows-installer-inventory.sh"
+valid_inventory="$test_root/valid-installer-inventory.txt"
+printf '%s\n' 'app/AceAgent.exe' 'app/AceAgentUpdater.exe' >"$valid_inventory"
+"$inventory_validator" "$valid_inventory" || fail "valid dual-executable installer inventory was rejected"
+
+agent_only_inventory="$test_root/agent-only-inventory.txt"
+printf '%s\n' 'app/AceAgent.exe' >"$agent_only_inventory"
+assert_publish_failure_contains "does not contain AceAgentUpdater.exe" "$inventory_validator" "$agent_only_inventory"
+
+decoy_inventory="$test_root/decoy-installer-inventory.txt"
+printf '%s\n' 'app/NotAceAgent.exe' 'app/NotAceAgentUpdater.exe' >"$decoy_inventory"
+assert_publish_failure_contains "does not contain AceAgent.exe" "$inventory_validator" "$decoy_inventory"
+
+driver_inventory="$test_root/driver-inventory.txt"
+printf '%s\n' 'app/AceAgent.exe' 'app/AceAgentUpdater.exe' 'app/WinDivert64.sys' >"$driver_inventory"
+assert_publish_failure_contains "contains a forbidden driver" "$inventory_validator" "$driver_inventory"
+pass_count=$((pass_count + 1))
+
 printf 'PASS: %d Windows release publication contract checks\n' "$pass_count"

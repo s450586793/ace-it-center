@@ -105,6 +105,10 @@ sudo ace-agent -server http://DSM-IP:9060 -enrollment TOKEN -once
 
 Windows Agent 在服务启动时立即检查稳定版更新，之后每 `1 小时 + 0～10 分钟随机抖动`检查一次，并静默安装通过签名验证的新版本。
 
+Windows release 同时包含固定名称的 `AceAgent.exe` 和 `AceAgentUpdater.exe`。首次安装或手动覆盖安装会写入固定 Updater；自动更新期间安装器只把新版 Updater 暂存为 `AceAgentUpdater.next.exe`，新 Agent 启动后校验版本并原子提升，避免再生成随机名称的自复制更新进程。两个 EXE 和安装器都包含可见的 Windows VERSIONINFO，包括产品名、文件说明、版本和原始文件名。
+
+release manifest 的 Ed25519 签名和安装包 SHA-256 用于 Ace IT Center 自身的更新真实性校验，不等同于 Windows Authenticode 代码签名。在取得并接入可信 Authenticode 证书前，固定文件名和完整 VERSIONINFO 只能降低启发式误报，不能保证火绒或其他安全软件不再告警。
+
 ## 构建并发布 Windows release
 
 Windows builder 是一次性容器。它固定 Go、Inno Setup 和 innoextract 输入，并基于 Debian Bookworm 构建；Wine 由 Bookworm 软件源在 image build 时安装。在容器运行时，它从只读 mount 读取 Ed25519 private key；private key 不会进入 image layer、release artifact 或构建日志。先在受控主机上生成密钥，并只将 private key 放到 DSM secret 目录：
@@ -128,7 +132,7 @@ sudo --preserve-env=RELEASE_VERSION,RELEASE_COMMIT,RELEASE_BUILT_AT \
   docker compose -f deploy/windows-builder.compose.yaml run --rm windows-builder
 ```
 
-builder 会从只读 private key 派生 public key 并编译进 Agent，使用真实 ISCC 生成 installer，检查 installer inventory，签名并验证 `latest.json`，最后原子发布到 `${ACE_RELEASES_DIR}/windows/stable`。它拒绝 downgrade 和覆盖同版本目录。成功后不存在运行中的 builder container；builder image 和 BuildKit cache 可删除，持久 release 不受影响。
+builder 会从只读 private key 派生 public key 并编译进 Agent 和固定 Updater，使用真实 ISCC 生成 installer，检查 inventory 同时包含两个 EXE 且不包含 WinDivert 或 `.sys` 驱动，签名并验证 `latest.json`，最后原子发布到 `${ACE_RELEASES_DIR}/windows/stable`。它拒绝 downgrade 和覆盖同版本目录。成功后不存在运行中的 builder container；builder image 和 BuildKit cache 可删除，持久 release 不受影响。
 
 Web 以只读方式挂载 `${ACE_RELEASES_DIR}/windows`。versioned installer 使用 immutable cache，stable alias 和 `latest.json` 使用 no-cache；发布新 release 不需要重建 Web image。
 

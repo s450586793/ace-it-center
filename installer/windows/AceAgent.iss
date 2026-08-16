@@ -4,6 +4,12 @@
 #ifndef SourceExe
   #error SourceExe must be supplied with /DSourceExe
 #endif
+#ifndef SourceUpdater
+  #error SourceUpdater must be supplied with /DSourceUpdater
+#endif
+#ifndef WindowsVersion
+  #error WindowsVersion must be supplied with /DWindowsVersion
+#endif
 #ifndef OutputDir
   #error OutputDir must be supplied with /DOutputDir
 #endif
@@ -13,6 +19,13 @@ AppId={{6D4E847C-51D9-4BEA-BD3B-ACE17C3A1001}
 AppName=Ace IT Center Agent
 AppVersion={#AppVersion}
 AppPublisher=Ace IT Center
+VersionInfoCompany=Ace IT Center
+VersionInfoDescription=Ace IT Center Agent Setup
+VersionInfoProductName=Ace IT Center Agent
+VersionInfoProductVersion={#AppVersion}
+VersionInfoVersion={#WindowsVersion}
+VersionInfoCopyright=Copyright (C) 2026 Ace IT Center
+VersionInfoOriginalFileName=AceAgentSetup-windows-amd64.exe
 DefaultDirName={autopf}\Ace IT Center
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
@@ -36,6 +49,8 @@ Name: "purgedata"; Description: "卸载时删除 Ace IT Center Agent 配置与�
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "AceAgent.exe"; Flags: ignoreversion
 Source: "{#SourceExe}"; DestName: "AceAgentUpgrade.exe"; Flags: dontcopy
+Source: "{#SourceUpdater}"; DestDir: "{app}"; DestName: "AceAgentUpdater.exe"; Flags: ignoreversion; Check: not IsUpdateHelperMode
+Source: "{#SourceUpdater}"; DestDir: "{app}"; DestName: "AceAgentUpdater.next.exe"; Flags: ignoreversion; Check: IsUpdateHelperMode
 
 [Registry]
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "AceITCenterAgentTray"; ValueData: """{app}\AceAgent.exe"" tray"; Flags: uninsdeletevalue
@@ -47,6 +62,8 @@ Name: "{autoprograms}\Ace IT Center Agent"; Filename: "{app}\AceAgent.exe"; Para
 Filename: "{app}\AceAgent.exe"; Parameters: "tray --show"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: CanStartTray
 
 [UninstallDelete]
+Type: files; Name: "{app}\AceAgentUpdater.exe"
+Type: files; Name: "{app}\AceAgentUpdater.next.exe"
 Type: filesandordirs; Name: "{commonappdata}\AceITCenter"; Tasks: purgedata
 
 [Code]

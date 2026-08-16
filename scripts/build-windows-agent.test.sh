@@ -17,6 +17,19 @@ else
     exit 1
   }
 fi
+windres_bin="${WINDRES_BIN:-x86_64-w64-mingw32-windres}"
+if [[ "$windres_bin" == */* ]]; then
+  [[ -x "$windres_bin" ]] || {
+    printf 'FAIL: WINDRES_BIN is not executable: %s\n' "$windres_bin" >&2
+    exit 1
+  }
+else
+  windres_bin="$(command -v "$windres_bin" 2>/dev/null)" || {
+    printf 'FAIL: windres is unavailable; set WINDRES_BIN\n' >&2
+    exit 1
+  }
+fi
+export WINDRES_BIN="$windres_bin"
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
@@ -52,6 +65,10 @@ assert_file() {
   [[ -f "$path" ]] || fail "expected file: $path"
 }
 
+contains_driver_reference() {
+  grep -Eiq '^([[:alpha:]]:)?[\\/][^[:space:]]*\.sys$|^[[:alnum:]_-]+\.sys$'
+}
+
 valid_commit="0123456789ab"
 valid_built_at="2026-07-27T08:09:10Z"
 valid_key="$(printf 'test-public-key' | base64 -w0)"
@@ -81,6 +98,22 @@ assert_failure_contains "ACE_UPDATE_PUBLIC_KEY is required" env -u ACE_UPDATE_PU
 assert_failure_contains "ACE_UPDATE_PUBLIC_KEY must be valid base64" env ACE_UPDATE_PUBLIC_KEY='not base64!' "$build_script" --agent-only 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/key-format"
 assert_failure_contains "ACE_AGENT_SOURCE must not start with '-'" env GO_BIN="$go_bin" ACE_UPDATE_PUBLIC_KEY="$valid_key" ACE_AGENT_SOURCE=-agent-source "$build_script" --agent-only 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/source-option"
 assert_failure_contains "Agent source directory does not exist" env ACE_UPDATE_PUBLIC_KEY="$valid_key" ACE_AGENT_SOURCE="$test_root/missing-source" "$build_script" --agent-only 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/source"
+assert_failure_contains "Updater source directory does not exist" env ACE_UPDATE_PUBLIC_KEY="$valid_key" ACE_UPDATER_SOURCE="$test_root/missing-updater-source" "$build_script" --agent-only 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/updater-source"
+assert_failure_contains "WINDRES_BIN is not executable" env WINDRES_BIN="$test_root/missing-windres" ACE_UPDATE_PUBLIC_KEY="$valid_key" "$build_script" --agent-only 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/windres"
+
+occupied_agent_source="$test_root/occupied-agent-source"
+occupied_updater_source="$test_root/occupied-updater-source"
+mkdir -p "$occupied_agent_source" "$occupied_updater_source"
+printf 'owned by another build\n' >"$occupied_agent_source/zz_versioninfo_windows.syso"
+assert_failure_contains "Agent VERSIONINFO target already exists" env \
+  GO_BIN="$go_bin" \
+  ACE_UPDATE_PUBLIC_KEY="$valid_key" \
+  ACE_AGENT_SOURCE="$occupied_agent_source" \
+  ACE_UPDATER_SOURCE="$occupied_updater_source" \
+  "$build_script" --agent-only 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/occupied-resource"
+[[ "$(<"$occupied_agent_source/zz_versioninfo_windows.syso")" == "owned by another build" ]] \
+  || fail "build cleanup removed or changed a pre-existing VERSIONINFO resource"
+
 assert_failure_contains "ISCC is required in full-package mode" env -u ISCC ACE_UPDATE_PUBLIC_KEY="$valid_key" "$build_script" 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/iscc-required"
 assert_failure_contains "ISCC is not executable or unavailable" env ISCC="$test_root/missing-iscc" ACE_UPDATE_PUBLIC_KEY="$valid_key" "$build_script" 0.2.0 "$valid_commit" "$valid_built_at" "$test_root/iscc-missing"
 
@@ -91,14 +124,18 @@ printf '%s\n' \
   'app_version=' \
   'output_dir=' \
   'source_exe=' \
+  'source_updater=' \
+  'windows_version=' \
   'for argument in "$@"; do' \
   '  case "$argument" in' \
   '    /DAppVersion=*) app_version="${argument#/DAppVersion=}" ;;' \
   '    /DOutputDir=*) output_dir="${argument#/DOutputDir=}" ;;' \
   '    /DSourceExe=*) source_exe="${argument#/DSourceExe=}" ;;' \
+  '    /DSourceUpdater=*) source_updater="${argument#/DSourceUpdater=}" ;;' \
+  '    /DWindowsVersion=*) windows_version="${argument#/DWindowsVersion=}" ;;' \
   '  esac' \
   'done' \
-  '[[ -n "$app_version" && -n "$output_dir" && -s "$source_exe" ]] || exit 31' \
+  '[[ -n "$app_version" && -n "$output_dir" && "$source_exe" == /* && -s "$source_exe" && "$source_updater" == /* && -s "$source_updater" && "$windows_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.0$ ]] || exit 31' \
   'if [[ "${FAKE_ISCC_MODE:-none}" == output ]]; then' \
   '  printf "fresh installer\n" >"$output_dir/AceAgentSetup-windows-amd64-V${app_version}.exe"' \
   'fi' >"$fake_iscc"
@@ -118,6 +155,7 @@ if ! full_build_output="$(env GO_BIN="$go_bin" ISCC="$fake_iscc" FAKE_ISCC_MODE=
 fi
 fresh_installer="$full_output/AceAgentSetup-windows-amd64-V${full_version}.exe"
 assert_file "$fresh_installer"
+assert_file "$full_output/AceAgentUpdater.exe"
 [[ "$(<"$fresh_installer")" == "fresh installer" ]] || fail "full-package build did not retain the fresh fake ISCC artifact"
 [[ "$full_build_output" == *"$fresh_installer"*"SHA-256"* ]] || fail "full-package build output does not report the installer SHA-256"
 pass_count=$((pass_count + 1))
@@ -131,11 +169,36 @@ if ! build_output="$(
   fail "agent-only build failed: $build_output"
 fi
 assert_file "$agent_output/AceAgent.exe"
-file_output="$(file "$agent_output/AceAgent.exe")"
-[[ "$file_output" == *"PE32+ executable (GUI) x86-64"* ]] || fail "unexpected Agent format: $file_output"
-objdump_output="$(objdump -p "$agent_output/AceAgent.exe")"
-[[ "$objdump_output" == *"Subsystem"*"Windows GUI"* ]] || fail "Agent is not a Windows GUI subsystem executable"
-[[ "$build_output" == *"AceAgent.exe"*"SHA-256"* ]] || fail "build output does not report the Agent SHA-256"
+assert_file "$agent_output/AceAgentUpdater.exe"
+for binary in AceAgent.exe AceAgentUpdater.exe; do
+  binary_path="$agent_output/$binary"
+  file_output="$(file "$binary_path")"
+  [[ "$file_output" == *"PE32+ executable (GUI) x86-64"* ]] || fail "unexpected $binary format: $file_output"
+  objdump_output="$(objdump -p "$binary_path")"
+  [[ "$objdump_output" == *"Subsystem"*"Windows GUI"* ]] || fail "$binary is not a Windows GUI subsystem executable"
+  utf16_strings="$(strings -el "$binary_path")"
+  for expected in CompanyName ProductName FileDescription ProductVersion OriginalFilename; do
+    [[ "$utf16_strings" == *"$expected"* ]] || fail "$binary VERSIONINFO is missing the $expected field"
+  done
+  for expected in "Ace IT Center" "Ace IT Center Agent" "0.2.0" "Copyright (C) 2026 Ace IT Center"; do
+    [[ "$utf16_strings" == *"$expected"* ]] || fail "$binary VERSIONINFO is missing $expected"
+  done
+  binary_strings="$(strings -a "$binary_path"; strings -el "$binary_path")"
+  [[ "${binary_strings,,}" != *"windivert"* ]] || fail "$binary contains WinDivert inventory"
+  if contains_driver_reference <<<"$binary_strings"; then
+    fail "$binary contains a .sys inventory entry"
+  fi
+done
+if contains_driver_reference <<<'os/exec.ExitError.Sys'; then
+  fail "driver reference check treated a Go symbol as a driver"
+fi
+contains_driver_reference <<<'WinDivert64.sys' || fail "driver reference check missed a driver filename"
+contains_driver_reference <<<'C:\Windows\System32\drivers\example.SYS' || fail "driver reference check missed an absolute driver path"
+agent_utf16="$(strings -el "$agent_output/AceAgent.exe")"
+updater_utf16="$(strings -el "$agent_output/AceAgentUpdater.exe")"
+[[ "$agent_utf16" == *"Ace IT Center Agent"* && "$agent_utf16" == *"AceAgent.exe"* ]] || fail "Agent VERSIONINFO fields are incomplete"
+[[ "$updater_utf16" == *"Ace IT Center Agent Updater"* && "$updater_utf16" == *"AceAgentUpdater.exe"* ]] || fail "Updater VERSIONINFO fields are incomplete"
+[[ "$build_output" == *"AceAgent.exe"*"SHA-256"* && "$build_output" == *"AceAgentUpdater.exe"*"SHA-256"* ]] || fail "build output does not report both executable SHA-256 values"
 [[ "$build_output" != *"$valid_key"* ]] || fail "build output exposed ACE_UPDATE_PUBLIC_KEY"
 pass_count=$((pass_count + 1))
 

@@ -74,6 +74,7 @@ RUN --mount=type=cache,id=ace-bookworm-apt-lists,target=/var/lib/apt/lists,shari
     && apt-get update \
     && apt-get install -y --no-install-recommends \
        binutils \
+       binutils-mingw-w64-x86-64 \
        ca-certificates \
        curl \
        file \
@@ -113,7 +114,7 @@ COPY agent ./agent
 COPY internal ./internal
 COPY tools ./tools
 COPY installer ./installer
-COPY scripts/build-windows-agent.sh scripts/publish-windows-release.sh ./scripts/
+COPY scripts/build-windows-agent.sh scripts/publish-windows-release.sh scripts/validate-windows-installer-inventory.sh ./scripts/
 
 RUN go build -trimpath -ldflags='-s -w' -o /usr/local/bin/ace-release ./tools/cmd/ace-release
 
@@ -125,7 +126,7 @@ set -euo pipefail
 arguments=()
 for argument in "$@"; do
   case "$argument" in
-    /DSourceExe=*|/DOutputDir=*)
+    /DSourceExe=*|/DSourceUpdater=*|/DOutputDir=*)
       prefix="${argument%%=*}="
       path="${argument#*=}"
       arguments+=("${prefix}$(winepath -w "$path")")
@@ -196,8 +197,7 @@ ace-release verify \
 
 inventory="$work_root/installer-inventory.txt"
 innoextract --list "$artifact" >"$inventory"
-grep -Fiq 'AceAgent.exe' "$inventory" \
-  || fail "installer inventory does not contain AceAgent.exe"
+scripts/validate-windows-installer-inventory.sh "$inventory"
 file "$artifact" | grep -Fq 'PE32' || fail "installer is not a Windows PE executable"
 
 upgrade_test_dir="$WINEPREFIX/drive_c/AceUpgradeContract"
@@ -206,6 +206,7 @@ upgrade_config="$upgrade_config_dir/agent.json"
 rm -rf "$upgrade_test_dir" "$upgrade_config_dir"
 mkdir -p "$upgrade_test_dir" "$upgrade_config_dir"
 printf 'old-agent\n' >"$upgrade_test_dir/AceAgent.exe"
+printf 'old-updater\n' >"$upgrade_test_dir/AceAgentUpdater.exe"
 printf '{"server_url":"https://preserved.example","credential":"preserved"}\n' >"$upgrade_config"
 cp "$upgrade_config" "$work_root/agent.json.before"
 xvfb-run -a wine "$artifact" \
@@ -214,6 +215,10 @@ xvfb-run -a wine "$artifact" \
 wineserver -w
 cmp "$build_root/AceAgent.exe" "$upgrade_test_dir/AceAgent.exe" \
   || fail "installer did not replace the existing Agent executable"
+cmp "$build_root/AceAgentUpdater.exe" "$upgrade_test_dir/AceAgentUpdater.next.exe" \
+  || fail "installer did not stage the pending fixed Updater"
+grep -Fxq 'old-updater' "$upgrade_test_dir/AceAgentUpdater.exe" \
+  || fail "installer overwrote the running fixed Updater"
 cmp "$work_root/agent.json.before" "$upgrade_config" \
   || fail "installer changed the existing Agent configuration"
 
