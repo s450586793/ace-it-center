@@ -54,6 +54,7 @@ FROM golang:${GO_VERSION}-bookworm
 
 ARG INNO_SETUP_VERSION=6.3.3
 ARG INNO_SETUP_SHA256=0bcb2a409dea17e305a27a6b09555cabe600e984f88570ab72575cd7e93c95e6
+ARG INNO_SETUP_URL=https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe
 ARG DEBIAN_MIRROR
 ARG DEBIAN_SECURITY_MIRROR
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -92,7 +93,7 @@ RUN --mount=type=cache,id=ace-bookworm-apt-lists,target=/var/lib/apt/lists,shari
        xauth \
        xvfb \
     && curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 \
-       "https://github.com/jrsoftware/issrc/releases/download/is-${INNO_SETUP_VERSION//./_}/innosetup-${INNO_SETUP_VERSION}.exe" \
+       "${INNO_SETUP_URL}" \
        -o /tmp/innosetup.exe \
     && printf '%s  %s\n' "$INNO_SETUP_SHA256" /tmp/innosetup.exe | sha256sum -c - \
     && mkdir -p "$WINEPREFIX" \

@@ -336,6 +336,15 @@ goproxy_run_line="$(grep -nFx 'RUN GOPROXY="${GOPROXY}" go mod download' "$repo_
 grep -Fxq '        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}' "$repo_root/deploy/windows-builder.compose.yaml" || fail "Windows builder Compose does not provide the DSM GOPROXY default"
 pass_count=$((pass_count + 1))
 
+inno_setup_url_arg_line="$(grep -nFx 'ARG INNO_SETUP_URL=https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe' "$repo_root/deploy/windows-builder.Dockerfile" | cut -d: -f1 || true)"
+inno_setup_url_run_line="$(grep -nF '"${INNO_SETUP_URL}"' "$repo_root/deploy/windows-builder.Dockerfile" | head -n1 | cut -d: -f1 || true)"
+inno_setup_sha_line="$(grep -nF '"$INNO_SETUP_SHA256" /tmp/innosetup.exe | sha256sum -c -' "$repo_root/deploy/windows-builder.Dockerfile" | head -n1 | cut -d: -f1 || true)"
+[[ -n "$inno_setup_url_arg_line" ]] || fail "Windows builder does not accept a configurable Inno Setup URL"
+[[ -n "$inno_setup_url_run_line" && "$inno_setup_url_run_line" -gt "$inno_setup_url_arg_line" ]] || fail "Windows builder does not download Inno Setup from the configured URL"
+[[ -n "$inno_setup_sha_line" && "$inno_setup_sha_line" -gt "$inno_setup_url_run_line" ]] || fail "Windows builder does not verify the configured Inno Setup download"
+grep -Fxq '        INNO_SETUP_URL: ${INNO_SETUP_URL:-https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe}' "$repo_root/deploy/windows-builder.compose.yaml" || fail "Windows builder Compose does not pass the configurable Inno Setup URL"
+pass_count=$((pass_count + 1))
+
 inventory_validator="$repo_root/scripts/validate-windows-installer-inventory.sh"
 valid_inventory="$test_root/valid-installer-inventory.txt"
 printf '%s\n' 'app/AceAgent.exe' 'app/AceAgentUpdater.exe' >"$valid_inventory"
