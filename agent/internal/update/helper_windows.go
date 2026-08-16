@@ -37,8 +37,6 @@ const (
 
 type windowsHelperOperations struct{}
 
-type windowsLaunchOperations struct{}
-
 type windowsHelperRuntime struct{}
 
 type windowsIdentityOperations struct{}
@@ -48,8 +46,6 @@ type nativeWindowsExecutionLockOperations struct{}
 func defaultHelperOperations(options HelperOptions) HelperOperations {
 	return &windowsHelperOperations{}
 }
-
-func defaultLaunchOperations() LaunchOperations { return windowsLaunchOperations{} }
 
 func defaultHelperRuntime() HelperRuntime { return windowsHelperRuntime{} }
 
@@ -256,51 +252,6 @@ func (operations *windowsHelperOperations) Cleanup(paths ...string) error {
 	}
 	return errors.Join(cleanupErrors...)
 }
-
-func (windowsLaunchOperations) CopyTemporaryHelper(sourcePath, stagingDirectory string) (string, error) {
-	if err := os.MkdirAll(stagingDirectory, 0o700); err != nil {
-		return "", err
-	}
-	if err := secureStagingDirectory(stagingDirectory); err != nil {
-		return "", err
-	}
-	temporary, err := os.CreateTemp(stagingDirectory, ".AceAgent-update-helper-*.exe")
-	if err != nil {
-		return "", err
-	}
-	temporaryPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
-		_ = os.Remove(temporaryPath)
-		return "", err
-	}
-	_ = os.Remove(temporaryPath)
-	if err := copyWindowsFileAtomic(sourcePath, temporaryPath, true); err != nil {
-		_ = os.Remove(temporaryPath)
-		return "", err
-	}
-	return temporaryPath, nil
-}
-
-func (windowsLaunchOperations) StartDetached(ctx context.Context, executable string, arguments []string, options DetachedLaunchOptions) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	creationFlags := uint32(windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS)
-	if options.BreakawayFromJob {
-		creationFlags |= windows.CREATE_BREAKAWAY_FROM_JOB
-	}
-	command := exec.Command(executable, arguments...)
-	command.SysProcAttr = &windows.SysProcAttr{
-		CreationFlags: creationFlags,
-		HideWindow:    true,
-	}
-	if err := command.Start(); err != nil {
-		return err
-	}
-	return command.Process.Release()
-}
-
-func (windowsLaunchOperations) Remove(path string) error { return os.Remove(path) }
 
 func (windowsHelperRuntime) ValidateRunningUpdater(installedExecutable string) error {
 	return validateUpdaterIdentity(installedExecutable, windowsIdentityOperations{})

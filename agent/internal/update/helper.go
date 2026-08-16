@@ -92,64 +92,11 @@ type HelperOptions struct {
 	restoreInterval  time.Duration
 }
 
-// LaunchOperations 隔离临时副本与 detached 进程创建操作。
-type LaunchOperations interface {
-	CopyTemporaryHelper(sourcePath, stagingDirectory string) (string, error)
-	StartDetached(context.Context, string, []string, DetachedLaunchOptions) error
-	Remove(string) error
-}
-
 // DetachedLaunchOptions 描述 helper 停止父 Windows Service 后仍需存活的进程隔离策略。
 type DetachedLaunchOptions struct {
+	NewProcessGroup  bool
+	Detached         bool
 	BreakawayFromJob bool
-}
-
-// LaunchOptions 包含传给 update-helper 的非敏感参数。
-type LaunchOptions struct {
-	ExecutablePath string
-	InstallerPath  string
-	BackupPath     string
-	StagingDir     string
-	Version        string
-	Operations     LaunchOperations
-}
-
-// LaunchHelper 启动临时副本，使 helper 运行时可替换已安装的 Agent 可执行文件。
-func LaunchHelper(ctx context.Context, options LaunchOptions) error {
-	if ctx == nil {
-		return errors.New("update launch context is required")
-	}
-	if options.ExecutablePath == "" || options.InstallerPath == "" || options.BackupPath == "" || options.StagingDir == "" || options.Version == "" {
-		return errors.New("update launch requires executable, installer, backup, staging directory, and version")
-	}
-	for _, path := range []string{options.ExecutablePath, options.InstallerPath, options.BackupPath, options.StagingDir} {
-		if !filepath.IsAbs(path) {
-			return errors.New("update launch paths must be absolute")
-		}
-	}
-	operations := options.Operations
-	if operations == nil {
-		operations = defaultLaunchOperations()
-		if operations == nil {
-			return errors.New("update launch is unavailable on this platform")
-		}
-	}
-	helperPath, err := operations.CopyTemporaryHelper(options.ExecutablePath, options.StagingDir)
-	if err != nil {
-		return fmt.Errorf("copy temporary update helper: %w", err)
-	}
-	arguments := []string{
-		"update-helper",
-		"--installer", options.InstallerPath,
-		"--executable", options.ExecutablePath,
-		"--backup", options.BackupPath,
-		"--version", options.Version,
-	}
-	detached := DetachedLaunchOptions{BreakawayFromJob: true}
-	if err := operations.StartDetached(ctx, helperPath, arguments, detached); err != nil {
-		return errors.Join(fmt.Errorf("start detached update helper: %w", err), wrapOptional("remove temporary update helper", operations.Remove(helperPath)))
-	}
-	return nil
 }
 
 // RunHelper 安装已暂存更新；安装、Service 启动或 pipe 健康校验失败时恢复 LKG 二进制。

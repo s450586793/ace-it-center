@@ -124,36 +124,6 @@ func TestExecutionObjectLockRejectsExistingObjectAndClosesReturnedHandle(t *test
 	}
 }
 
-type fakeLaunchOperations struct {
-	helperPath string
-	copyFrom   string
-	copyDir    string
-	started    string
-	args       []string
-	detached   DetachedLaunchOptions
-	copyErr    error
-	startErr   error
-	removed    string
-}
-
-func (f *fakeLaunchOperations) CopyTemporaryHelper(source, directory string) (string, error) {
-	f.copyFrom = source
-	f.copyDir = directory
-	return f.helperPath, f.copyErr
-}
-
-func (f *fakeLaunchOperations) StartDetached(_ context.Context, executable string, args []string, options DetachedLaunchOptions) error {
-	f.started = executable
-	f.args = append([]string(nil), args...)
-	f.detached = options
-	return f.startErr
-}
-
-func (f *fakeLaunchOperations) Remove(path string) error {
-	f.removed = path
-	return nil
-}
-
 func (f *fakeHelperOperations) StopService(context.Context) error {
 	f.events = append(f.events, "stop")
 	return popError(&f.stopErrors)
@@ -447,60 +417,6 @@ func TestHelperValidatesOptionsBeforeStoppingService(t *testing.T) {
 	}
 }
 
-func TestLaunchHelperUsesTemporaryCopyAndCredentialFreeArgumentVector(t *testing.T) {
-	operations := &fakeLaunchOperations{helperPath: "/Program Data/Ace/update helper.exe"}
-	options := LaunchOptions{
-		ExecutablePath: "/Program Files/Ace/AceAgent.exe",
-		InstallerPath:  "/Program Data/Ace/setup 0.2.0.exe",
-		BackupPath:     "/Program Data/Ace/AceAgent lkg.exe",
-		StagingDir:     "/Program Data/Ace",
-		Version:        "0.2.0",
-		Operations:     operations,
-	}
-
-	if err := LaunchHelper(context.Background(), options); err != nil {
-		t.Fatalf("LaunchHelper() error = %v", err)
-	}
-	if operations.copyFrom != options.ExecutablePath || operations.copyDir != options.StagingDir || operations.started != operations.helperPath {
-		t.Fatalf("launch operations = %#v", operations)
-	}
-	want := []string{
-		"update-helper",
-		"--installer", options.InstallerPath,
-		"--executable", options.ExecutablePath,
-		"--backup", options.BackupPath,
-		"--version", options.Version,
-	}
-	if !slices.Equal(operations.args, want) {
-		t.Fatalf("helper args = %#v, want %#v", operations.args, want)
-	}
-	if !operations.detached.BreakawayFromJob {
-		t.Fatal("helper launch did not request Windows Job breakaway")
-	}
-}
-
-func TestLaunchHelperRemovesTemporaryCopyWhenDetachedStartFails(t *testing.T) {
-	startErr := errors.New("CreateProcess failed")
-	operations := &fakeLaunchOperations{helperPath: "/staging/update-helper.exe", startErr: startErr}
-	options := LaunchOptions{
-		ExecutablePath: "/program/AceAgent.exe",
-		InstallerPath:  "/staging/setup.exe",
-		BackupPath:     "/staging/lkg.exe",
-		StagingDir:     "/staging",
-		Version:        "0.2.0",
-		Operations:     operations,
-	}
-
-	err := LaunchHelper(context.Background(), options)
-
-	if !errors.Is(err, startErr) {
-		t.Fatalf("LaunchHelper() error = %v", err)
-	}
-	if operations.removed != operations.helperPath {
-		t.Fatalf("removed = %q, want %q", operations.removed, operations.helperPath)
-	}
-}
-
 func TestWaitForHealthyEnforcesOverallDeadlineOnBlockingAttempt(t *testing.T) {
 	started := time.Now()
 	err := waitForHealthy(context.Background(), 10*time.Millisecond, time.Millisecond, func(ctx context.Context) (bool, error) {
@@ -696,52 +612,6 @@ func TestHelperIdentityAndCrossProcessLockRunBeforeServiceMutation(t *testing.T)
 	}
 	if len(ops.events) != 0 {
 		t.Fatalf("service mutated before helper lock: %v", ops.events)
-	}
-}
-
-func TestLaunchHelperFailsClosedForInvalidContextPathsAndPlatform(t *testing.T) {
-	valid := LaunchOptions{
-		ExecutablePath: "/program/AceAgent.exe",
-		InstallerPath:  "/staging/setup.exe",
-		BackupPath:     "/staging/lkg.exe",
-		StagingDir:     "/staging",
-		Version:        "0.2.0",
-	}
-	if err := LaunchHelper(nil, valid); err == nil {
-		t.Fatal("LaunchHelper() accepted nil context")
-	}
-	missing := valid
-	missing.Version = ""
-	if err := LaunchHelper(context.Background(), missing); err == nil {
-		t.Fatal("LaunchHelper() accepted missing version")
-	}
-	relative := valid
-	relative.BackupPath = "lkg.exe"
-	if err := LaunchHelper(context.Background(), relative); err == nil {
-		t.Fatal("LaunchHelper() accepted relative path")
-	}
-	if err := LaunchHelper(context.Background(), valid); err == nil {
-		t.Fatal("LaunchHelper() used unsupported non-Windows operations")
-	}
-}
-
-func TestLaunchHelperPropagatesTemporaryCopyFailureWithoutStarting(t *testing.T) {
-	copyErr := errors.New("copy denied")
-	operations := &fakeLaunchOperations{copyErr: copyErr}
-	options := LaunchOptions{
-		ExecutablePath: "/program/AceAgent.exe",
-		InstallerPath:  "/staging/setup.exe",
-		BackupPath:     "/staging/lkg.exe",
-		StagingDir:     "/staging",
-		Version:        "0.2.0",
-		Operations:     operations,
-	}
-
-	if err := LaunchHelper(context.Background(), options); !errors.Is(err, copyErr) {
-		t.Fatalf("LaunchHelper() copy error = %v", err)
-	}
-	if operations.started != "" {
-		t.Fatalf("started helper = %q", operations.started)
 	}
 }
 

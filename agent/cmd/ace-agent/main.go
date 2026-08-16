@@ -5,14 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	agentclient "aceitcenter.local/platform/agent/internal/agent"
@@ -57,18 +55,13 @@ func main() {
 			logger.Error("run Windows tray", "error", err)
 			os.Exit(1)
 		}
-	case app.ModeUpdateHelper:
-		if err := runUpdateHelper(logger, args); err != nil {
-			logger.Error("run update helper", "error", err)
-			os.Exit(1)
-		}
 	default:
 		logger.Error("agent mode is not implemented", "mode", mode)
 	}
 }
 
 func shouldAttachConsole(goos string, args []string) bool {
-	if goos != "windows" || len(args) == 0 || args[0] == "tray" || args[0] == "update-helper" {
+	if goos != "windows" || len(args) == 0 || args[0] == "tray" {
 		return false
 	}
 	return args[0] != "service" || len(args) > 1
@@ -157,20 +150,16 @@ func newServiceController(configPath string, logger *slog.Logger) *controller.Co
 				return controller.UpdateStatus{}, fmt.Errorf("locate Agent executable: %w", err)
 			}
 			stagingDirectory := agentpaths.StagingDirectory(configPath)
-			checker := update.Checker{
-				Origin:         config.ServerURL,
-				CurrentVersion: buildinfo.Version,
-				CurrentOS:      currentOS,
-				PublicKey:      buildinfo.UpdatePublicKey,
-				StagingDir:     stagingDirectory,
-				Timeout:        30 * time.Second,
-			}
 			return executeServiceUpdate(ctx, serviceUpdateRuntime{
-				checker:        checker,
-				executablePath: executable,
-				stagingDir:     stagingDirectory,
-				launch:         update.LaunchHelper,
-				authorize:      authorize,
+				client: update.ProcessClient{AgentPath: executable},
+				checkOptions: update.CheckOptions{
+					Origin:         config.ServerURL,
+					CurrentVersion: buildinfo.Version,
+					CurrentOS:      currentOS,
+					StagingDir:     stagingDirectory,
+				},
+				backupPath: filepath.Join(stagingDirectory, "AceAgent.lkg.exe"),
+				authorize:  authorize,
 			})
 		},
 		LogBootstrapFailure: func() {
@@ -180,171 +169,47 @@ func newServiceController(configPath string, logger *slog.Logger) *controller.Co
 	return runtimeController
 }
 
-type serviceUpdateChecker interface {
-	Check(context.Context) (update.Candidate, error)
-	Stage(context.Context, update.Candidate) (update.StagedUpdate, error)
+type serviceUpdateClient interface {
+	Check(context.Context, update.CheckOptions) (update.CheckResult, error)
+	LaunchApply(context.Context, update.ApplyOptions) error
 }
 
 type serviceUpdateRuntime struct {
-	checker        serviceUpdateChecker
-	executablePath string
-	stagingDir     string
-	launch         func(context.Context, update.LaunchOptions) error
-	authorize      controller.UpdateLaunchAuthorizer
+	client       serviceUpdateClient
+	checkOptions update.CheckOptions
+	backupPath   string
+	authorize    controller.UpdateLaunchAuthorizer
 }
 
 func executeServiceUpdate(ctx context.Context, runtime serviceUpdateRuntime) (controller.UpdateStatus, error) {
-	if runtime.checker == nil || runtime.launch == nil || runtime.authorize == nil || runtime.executablePath == "" || runtime.stagingDir == "" {
+	if runtime.client == nil || runtime.authorize == nil || runtime.backupPath == "" {
 		return controller.UpdateStatus{}, errors.New("update runtime is incomplete")
 	}
-	candidate, err := runtime.checker.Check(ctx)
+	result, err := runtime.client.Check(ctx, runtime.checkOptions)
 	if err != nil {
 		return controller.UpdateStatus{}, err
 	}
-	staged, err := runtime.checker.Stage(ctx, candidate)
-	if err != nil {
-		return controller.UpdateStatus{}, err
+	if !result.Available {
+		return controller.UpdateStatus{}, nil
 	}
-	launchOptions := update.LaunchOptions{
-		ExecutablePath: runtime.executablePath,
-		InstallerPath:  staged.InstallerPath,
-		BackupPath:     filepath.Join(runtime.stagingDir, "AceAgent.lkg.exe"),
-		StagingDir:     runtime.stagingDir,
-		Version:        staged.Version,
+	applyOptions := update.ApplyOptions{
+		InstallerPath: result.InstallerPath,
+		BackupPath:    runtime.backupPath,
+		Version:       result.Version,
 	}
 	finish, err := runtime.authorize()
 	if err != nil {
-		_ = os.Remove(staged.InstallerPath)
-		return controller.UpdateStatus{}, fmt.Errorf("authorize update helper launch: %w", err)
+		_ = os.Remove(result.InstallerPath)
+		return controller.UpdateStatus{}, fmt.Errorf("authorize fixed updater launch: %w", err)
 	}
-	status := controller.UpdateStatus{Available: true, Version: staged.Version, URL: candidate.InstallerURL}
-	if err := runtime.launch(ctx, launchOptions); err != nil {
+	status := controller.UpdateStatus{Available: true, Version: result.Version, URL: result.URL}
+	if err := runtime.client.LaunchApply(ctx, applyOptions); err != nil {
 		finish(controller.UpdateStatus{}, false)
-		_ = os.Remove(staged.InstallerPath)
-		return controller.UpdateStatus{}, fmt.Errorf("launch update helper: %w", err)
+		_ = os.Remove(result.InstallerPath)
+		return controller.UpdateStatus{}, fmt.Errorf("launch fixed updater: %w", err)
 	}
 	finish(status, true)
 	return status, nil
-}
-
-func runUpdateHelper(_ *slog.Logger, args []string) error {
-	logger, closer, err := logging.New(logging.Options{
-		Path:  agentpaths.UpdateLogPath(defaultAgentConfigPath()),
-		Level: slog.LevelInfo,
-	})
-	if err != nil {
-		return fmt.Errorf("configure update logging: %w", err)
-	}
-	defer closer.Close()
-	return runUpdateHelperWithRunner(context.Background(), args, defaultAgentConfigPath(), logger, update.RunHelper)
-}
-
-func runUpdateHelperWithRunner(ctx context.Context, args []string, configPath string, logger *slog.Logger, runner func(context.Context, update.HelperOptions) error) error {
-	if runner == nil {
-		return errors.New("update helper runner is required")
-	}
-	options, err := parseUpdateHelperOptions(args)
-	if err != nil {
-		return err
-	}
-	options = configureUpdateHelperOptions(options, configPath, func(error) {
-		if logger != nil {
-			logger.Warn("update helper cleanup deferred", "version", options.Version)
-		}
-	})
-	if logger != nil {
-		logger.Info("update helper started", "version", options.Version)
-	}
-	if err := runner(ctx, options); err != nil {
-		if logger != nil {
-			attributes := []any{"version", options.Version, "stage", updateFailureStage(err)}
-			if recoveryStage := updateRecoveryFailureStage(err); recoveryStage != "" {
-				attributes = append(attributes, "recovery_stage", recoveryStage)
-			}
-			logger.Error("update helper failed", attributes...)
-		}
-		return err
-	}
-	if logger != nil {
-		logger.Info("update helper completed", "version", options.Version)
-	}
-	return nil
-}
-
-func updateFailureStage(err error) string {
-	if err == nil {
-		return ""
-	}
-	message := err.Error()
-	switch {
-	case strings.Contains(message, "validate running update helper"):
-		return "helper_validation"
-	case strings.Contains(message, "acquire update helper execution lock"):
-		return "helper_lock"
-	case strings.Contains(message, "stop Agent Service"):
-		return "stop_service"
-	case strings.Contains(message, "stop Agent tray"):
-		return "stop_tray"
-	case strings.Contains(message, "run silent installer"):
-		return "installer"
-	case strings.Contains(message, "configure updated Agent Service"):
-		return "service_config"
-	case strings.Contains(message, "start updated Agent Service"):
-		return "start_service"
-	case strings.Contains(message, "validate updated Agent health"):
-		return "health_check"
-	case strings.Contains(message, "store last-known-good Agent"):
-		return "backup"
-	default:
-		return "unknown"
-	}
-}
-
-func updateRecoveryFailureStage(err error) string {
-	if err == nil {
-		return ""
-	}
-	message := err.Error()
-	switch {
-	case strings.Contains(message, "stop failed updated Agent Service"):
-		return "stop_service"
-	case strings.Contains(message, "restore last-known-good Agent"):
-		return "restore"
-	case strings.Contains(message, "reapply last-known-good Agent Service configuration"):
-		return "service_config"
-	case strings.Contains(message, "restart last-known-good Agent Service"):
-		return "start_service"
-	case strings.Contains(message, "validate last-known-good Agent health"):
-		return "health_check"
-	default:
-		return ""
-	}
-}
-
-func configureUpdateHelperOptions(options update.HelperOptions, configPath string, warning func(error)) update.HelperOptions {
-	options.StagingDir = agentpaths.StagingDirectory(configPath)
-	options.CleanupWarning = warning
-	return options
-}
-
-func parseUpdateHelperOptions(args []string) (update.HelperOptions, error) {
-	flags := flag.NewFlagSet("update-helper", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	var options update.HelperOptions
-	flags.StringVar(&options.InstallerPath, "installer", "", "staged installer path")
-	flags.StringVar(&options.ExecutablePath, "executable", "", "installed Agent path")
-	flags.StringVar(&options.BackupPath, "backup", "", "last-known-good Agent path")
-	flags.StringVar(&options.Version, "version", "", "candidate version")
-	if err := flags.Parse(args); err != nil {
-		return update.HelperOptions{}, fmt.Errorf("parse update helper arguments: %w", err)
-	}
-	if flags.NArg() != 0 {
-		return update.HelperOptions{}, errors.New("update helper does not accept positional arguments")
-	}
-	if options.InstallerPath == "" || options.ExecutablePath == "" || options.BackupPath == "" || options.Version == "" {
-		return update.HelperOptions{}, errors.New("update helper requires installer, executable, backup, and version")
-	}
-	return options, nil
 }
 
 type serviceEnroller struct{}
@@ -403,9 +268,11 @@ func (servicePairer) PollPairing(ctx context.Context, pending agentclient.Pendin
 }
 
 type serviceWorker struct {
-	logger     *slog.Logger
-	configPath string
-	statusSink app.StatusSink
+	logger         *slog.Logger
+	configPath     string
+	statusSink     app.StatusSink
+	executablePath string
+	promoteUpdater func(context.Context, update.PromotionOptions) error
 }
 
 const uploadedLogMaxBytes int64 = 64 << 10
@@ -473,7 +340,38 @@ func (w serviceWorker) Run(ctx context.Context, config agentclient.Config, inter
 		}
 	}
 	worker := app.NewWorker(dependencies)
+	w.startUpdaterMaintenance(ctx)
 	return worker.Run(ctx, config, interval)
+}
+
+func (w serviceWorker) startUpdaterMaintenance(ctx context.Context) {
+	executablePath := w.executablePath
+	if executablePath == "" {
+		var err error
+		executablePath, err = os.Executable()
+		if err != nil {
+			if w.logger != nil {
+				w.logger.Warn("updater maintenance unavailable", "stage", "locate_agent")
+			}
+			return
+		}
+	}
+	promote := w.promoteUpdater
+	if promote == nil {
+		promote = update.PromotePendingUpdater
+	}
+	options := update.PromotionOptions{
+		AgentVersion:       buildinfo.Version,
+		InstalledPath:      agentpaths.UpdaterPath(executablePath),
+		PendingPath:        agentpaths.PendingUpdaterPath(executablePath),
+		StagingDirectory:   agentpaths.StagingDirectory(w.configPath),
+		CurrentProcessPath: executablePath,
+	}
+	go func() {
+		if err := promote(ctx, options); err != nil && ctx.Err() == nil && w.logger != nil {
+			w.logger.Warn("updater maintenance failed", "stage", "promotion")
+		}
+	}()
 }
 
 func logServiceHeartbeatState(logger *slog.Logger, snapshot app.StatusSnapshot) {

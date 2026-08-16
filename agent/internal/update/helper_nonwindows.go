@@ -9,8 +9,6 @@ import (
 
 func defaultHelperOperations(HelperOptions) HelperOperations { return nil }
 
-func defaultLaunchOperations() LaunchOperations { return nil }
-
 func defaultHelperRuntime() HelperRuntime { return nil }
 
 func recordCleanupWarning(string, error) {}

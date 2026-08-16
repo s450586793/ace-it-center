@@ -18,11 +18,12 @@ import (
 	"aceitcenter.local/platform/internal/core"
 )
 
-type fakeServiceUpdateChecker struct {
-	candidate update.Candidate
-	staged    update.StagedUpdate
-	checked   bool
-	stagedArg update.Candidate
+type fakeServiceUpdateClient struct {
+	result       update.CheckResult
+	checkOptions update.CheckOptions
+	applyOptions update.ApplyOptions
+	checkErr     error
+	launchErr    error
 }
 
 type fakeForegroundController struct {
@@ -206,163 +207,65 @@ func TestNetworkUsagePathUsesAgentConfigDirectory(t *testing.T) {
 	}
 }
 
-func (f *fakeServiceUpdateChecker) Check(context.Context) (update.Candidate, error) {
-	f.checked = true
-	return f.candidate, nil
-}
-
-func (f *fakeServiceUpdateChecker) Stage(_ context.Context, candidate update.Candidate) (update.StagedUpdate, error) {
-	f.stagedArg = candidate
-	return f.staged, nil
-}
-
-func TestUpdateHelperModeDoesNotAttachConsole(t *testing.T) {
-	if shouldAttachConsole("windows", []string{"update-helper", "--installer", `C:\ProgramData\setup.exe`}) {
-		t.Fatal("update-helper attempted to attach a console")
-	}
-}
-
-func TestParseUpdateHelperOptionsPreservesPathsWithSpaces(t *testing.T) {
-	arguments := []string{
-		"--installer", `C:\ProgramData\Ace IT Center\setup.exe`,
-		"--executable", `C:\Program Files\Ace IT Center\AceAgent.exe`,
-		"--backup", `C:\ProgramData\Ace IT Center\AceAgent.lkg.exe`,
-		"--version", "0.2.0",
-	}
-
-	options, err := parseUpdateHelperOptions(arguments)
-
-	if err != nil {
-		t.Fatalf("parseUpdateHelperOptions() error = %v", err)
-	}
-	if options.InstallerPath != arguments[1] || options.ExecutablePath != arguments[3] || options.BackupPath != arguments[5] || options.Version != "0.2.0" {
-		t.Fatalf("options = %#v", options)
-	}
-}
-
-func TestParseUpdateHelperOptionsRejectsMissingAndUnknownArguments(t *testing.T) {
-	for _, arguments := range [][]string{
-		{"--installer", `C:\setup.exe`},
-		{"--credential", "secret"},
-		{"--installer", `C:\setup.exe`, "extra"},
-	} {
-		if _, err := parseUpdateHelperOptions(arguments); err == nil {
-			t.Fatalf("arguments %v were accepted", arguments)
-		}
-	}
-}
-
-func TestConfigureUpdateHelperUsesTrustedConfigDirectoryAndWarningSink(t *testing.T) {
-	options := update.HelperOptions{InstallerPath: "/untrusted/setup.exe"}
-	warningCalled := false
-	warning := func(error) { warningCalled = true }
-
-	configured := configureUpdateHelperOptions(options, "/ProgramData/AceITCenter/agent.json", warning)
-
-	if configured.StagingDir != "/ProgramData/AceITCenter/updates" {
-		t.Fatalf("staging directory = %q", configured.StagingDir)
-	}
-	if configured.CleanupWarning == nil {
-		t.Fatal("cleanup warning sink was not configured")
-	}
-	configured.CleanupWarning(errors.New("cleanup"))
-	if !warningCalled {
-		t.Fatal("cleanup warning sink was not invoked")
-	}
-}
-
-func TestRunUpdateHelperWithRunnerWritesSafeFailureAudit(t *testing.T) {
-	var output bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&output, nil))
+func TestServiceWorkerStartsFixedUpdaterMaintenanceWithoutBlocking(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "AceITCenter", "agent.json")
-	arguments := []string{
-		"--installer", filepath.Join(t.TempDir(), "AceAgentSetup.exe"),
-		"--executable", filepath.Join(t.TempDir(), "AceAgent.exe"),
-		"--backup", filepath.Join(t.TempDir(), "AceAgent.lkg.exe"),
-		"--version", "0.3.0",
-	}
-	updateErr := errors.New("run silent installer: authorization=secret")
-
-	err := runUpdateHelperWithRunner(context.Background(), arguments, configPath, logger, func(context.Context, update.HelperOptions) error {
-		return updateErr
-	})
-
-	if !errors.Is(err, updateErr) {
-		t.Fatalf("runUpdateHelperWithRunner() error = %v, want %v", err, updateErr)
-	}
-	got := output.String()
-	if !strings.Contains(got, "update helper started") || !strings.Contains(got, "update helper failed") || !strings.Contains(got, `"stage":"installer"`) {
-		t.Fatalf("audit log = %q", got)
-	}
-	if strings.Contains(got, "authorization=secret") {
-		t.Fatalf("audit log leaked update error details: %q", got)
-	}
-}
-
-func TestUpdateFailureStageKeepsPrimaryInstallerFailureWhenRollbackRestoreFails(t *testing.T) {
-	err := errors.Join(
-		errors.New("run silent installer: exit status 16"),
-		errors.New("restore last-known-good Agent: sharing violation"),
-	)
-
-	if got := updateFailureStage(err); got != "installer" {
-		t.Fatalf("updateFailureStage() = %q, want installer", got)
-	}
-}
-
-func TestUpdateFailureStageIdentifiesTrayStopFailure(t *testing.T) {
-	err := errors.New("stop Agent tray: tray did not exit")
-
-	if got := updateFailureStage(err); got != "stop_tray" {
-		t.Fatalf("updateFailureStage() = %q, want stop_tray", got)
-	}
-}
-
-func TestRunUpdateHelperFailureAuditIncludesRollbackStageWithoutErrorDetails(t *testing.T) {
-	var output bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&output, nil))
-	arguments := []string{
-		"--installer", filepath.Join(t.TempDir(), "AceAgentSetup.exe"),
-		"--executable", filepath.Join(t.TempDir(), "AceAgent.exe"),
-		"--backup", filepath.Join(t.TempDir(), "AceAgent.lkg.exe"),
-		"--version", "0.4.2",
-	}
-	updateErr := errors.Join(
-		errors.New("run silent installer: exit status 16"),
-		errors.New("restore last-known-good Agent: path=private-machine-name"),
-	)
-
-	_ = runUpdateHelperWithRunner(context.Background(), arguments, filepath.Join(t.TempDir(), "agent.json"), logger, func(context.Context, update.HelperOptions) error {
-		return updateErr
-	})
-
-	got := output.String()
-	if !strings.Contains(got, `"stage":"installer"`) || !strings.Contains(got, `"recovery_stage":"restore"`) {
-		t.Fatalf("audit log = %q", got)
-	}
-	if strings.Contains(got, "private-machine-name") {
-		t.Fatalf("audit log leaked failure details: %q", got)
-	}
-}
-
-func TestExecuteServiceUpdateStagesAndLaunchesTemporaryHelper(t *testing.T) {
-	stagingDir := filepath.Join(t.TempDir(), "update staging")
-	candidate := update.Candidate{Manifest: update.Manifest{Version: "0.2.0"}, InstallerURL: "https://it.example/download/setup.exe"}
-	staged := update.StagedUpdate{Version: "0.2.0", InstallerPath: filepath.Join(stagingDir, "setup.exe"), Manifest: candidate.Manifest}
-	checker := &fakeServiceUpdateChecker{candidate: candidate, staged: staged}
-	var launched update.LaunchOptions
-	finished := false
-	runtime := serviceUpdateRuntime{
-		checker:        checker,
-		executablePath: filepath.Join(t.TempDir(), "Program Files", "AceAgent.exe"),
-		stagingDir:     stagingDir,
-		launch: func(_ context.Context, options update.LaunchOptions) error {
-			launched = options
+	executablePath := filepath.Join(t.TempDir(), "Ace IT Center", "AceAgent.exe")
+	started := make(chan update.PromotionOptions, 1)
+	release := make(chan struct{})
+	worker := serviceWorker{
+		configPath:     configPath,
+		executablePath: executablePath,
+		promoteUpdater: func(_ context.Context, options update.PromotionOptions) error {
+			started <- options
+			<-release
 			return nil
 		},
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		worker.startUpdaterMaintenance(context.Background())
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("startUpdaterMaintenance blocked on promotion")
+	}
+	select {
+	case options := <-started:
+		if options.AgentVersion == "" || options.InstalledPath != filepath.Join(filepath.Dir(executablePath), "AceAgentUpdater.exe") || options.PendingPath != filepath.Join(filepath.Dir(executablePath), "AceAgentUpdater.next.exe") || options.StagingDirectory != filepath.Join(filepath.Dir(configPath), "updates") || options.CurrentProcessPath != executablePath {
+			t.Fatalf("promotion options = %#v", options)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("updater maintenance did not start")
+	}
+	close(release)
+}
+
+func (f *fakeServiceUpdateClient) Check(_ context.Context, options update.CheckOptions) (update.CheckResult, error) {
+	f.checkOptions = options
+	return f.result, f.checkErr
+}
+
+func (f *fakeServiceUpdateClient) LaunchApply(_ context.Context, options update.ApplyOptions) error {
+	f.applyOptions = options
+	return f.launchErr
+}
+
+func TestExecuteServiceUpdateChecksAndLaunchesFixedUpdater(t *testing.T) {
+	stagingDir := filepath.Join(t.TempDir(), "update staging")
+	installerPath := filepath.Join(stagingDir, "setup.exe")
+	client := &fakeServiceUpdateClient{result: update.CheckResult{Available: true, Version: "0.4.11", URL: "https://it.example/download/setup.exe", InstallerPath: installerPath}}
+	checkOptions := update.CheckOptions{Origin: "https://it.example", CurrentVersion: "0.4.10", CurrentOS: "10.0.19045", StagingDir: stagingDir}
+	finished := false
+	runtime := serviceUpdateRuntime{
+		client:       client,
+		checkOptions: checkOptions,
+		backupPath:   filepath.Join(stagingDir, "AceAgent.lkg.exe"),
 		authorize: func() (func(controller.UpdateStatus, bool), error) {
 			return func(status controller.UpdateStatus, launched bool) {
-				finished = launched && status.Version == "0.2.0"
+				finished = launched && status.Version == "0.4.11"
 			}, nil
 		},
 	}
@@ -372,36 +275,52 @@ func TestExecuteServiceUpdateStagesAndLaunchesTemporaryHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeServiceUpdate() error = %v", err)
 	}
-	if !checker.checked || checker.stagedArg != candidate {
-		t.Fatalf("checker = %#v", checker)
+	if client.checkOptions != checkOptions {
+		t.Fatalf("check options = %#v", client.checkOptions)
 	}
-	wantBackup := filepath.Join(stagingDir, "AceAgent.lkg.exe")
-	if launched.ExecutablePath != runtime.executablePath || launched.InstallerPath != staged.InstallerPath || launched.BackupPath != wantBackup || launched.StagingDir != stagingDir || launched.Version != "0.2.0" {
-		t.Fatalf("launch options = %#v", launched)
+	wantApply := update.ApplyOptions{InstallerPath: installerPath, BackupPath: runtime.backupPath, Version: "0.4.11"}
+	if client.applyOptions != wantApply {
+		t.Fatalf("apply options = %#v, want %#v", client.applyOptions, wantApply)
 	}
-	wantStatus := (controller.UpdateStatus{Available: true, Version: "0.2.0", URL: candidate.InstallerURL})
+	wantStatus := (controller.UpdateStatus{Available: true, Version: "0.4.11", URL: client.result.URL})
 	if status != wantStatus {
 		t.Fatalf("status = %#v, want %#v", status, wantStatus)
 	}
 	if !finished {
-		t.Fatal("successful helper launch did not finish generation authorization")
+		t.Fatal("successful fixed updater launch did not finish generation authorization")
+	}
+}
+
+func TestExecuteServiceUpdateReturnsUnavailableWithoutAuthorization(t *testing.T) {
+	client := &fakeServiceUpdateClient{}
+	authorized := false
+	status, err := executeServiceUpdate(context.Background(), serviceUpdateRuntime{
+		client:       client,
+		checkOptions: update.CheckOptions{Origin: "https://it.example", CurrentVersion: "0.4.10", CurrentOS: "10.0.19045", StagingDir: t.TempDir()},
+		backupPath:   filepath.Join(t.TempDir(), "AceAgent.lkg.exe"),
+		authorize: func() (func(controller.UpdateStatus, bool), error) {
+			authorized = true
+			return func(controller.UpdateStatus, bool) {}, nil
+		},
+	})
+	if err != nil || status != (controller.UpdateStatus{}) || authorized || client.applyOptions != (update.ApplyOptions{}) {
+		t.Fatalf("status=%#v err=%v authorized=%t apply=%#v", status, err, authorized, client.applyOptions)
 	}
 }
 
 func TestExecuteServiceUpdateLaunchFailureFinishesAuthorizationWithoutPending(t *testing.T) {
 	launchErr := errors.New("CreateProcess failed")
 	stagingDir := t.TempDir()
-	candidate := update.Candidate{Manifest: update.Manifest{Version: "0.2.0"}, InstallerURL: "https://it.example/setup.exe"}
-	checker := &fakeServiceUpdateChecker{
-		candidate: candidate,
-		staged:    update.StagedUpdate{Version: "0.2.0", InstallerPath: filepath.Join(stagingDir, "setup.exe")},
+	installerPath := filepath.Join(stagingDir, "setup.exe")
+	if err := os.WriteFile(installerPath, []byte("installer"), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	client := &fakeServiceUpdateClient{result: update.CheckResult{Available: true, Version: "0.4.11", URL: "https://it.example/setup.exe", InstallerPath: installerPath}, launchErr: launchErr}
 	finishedLaunch := true
 	runtime := serviceUpdateRuntime{
-		checker:        checker,
-		executablePath: filepath.Join(t.TempDir(), "AceAgent.exe"),
-		stagingDir:     stagingDir,
-		launch:         func(context.Context, update.LaunchOptions) error { return launchErr },
+		client:       client,
+		checkOptions: update.CheckOptions{Origin: "https://it.example", CurrentVersion: "0.4.10", CurrentOS: "10.0.19045", StagingDir: stagingDir},
+		backupPath:   filepath.Join(stagingDir, "AceAgent.lkg.exe"),
 		authorize: func() (func(controller.UpdateStatus, bool), error) {
 			return func(_ controller.UpdateStatus, launched bool) { finishedLaunch = launched }, nil
 		},
@@ -413,28 +332,26 @@ func TestExecuteServiceUpdateLaunchFailureFinishesAuthorizationWithoutPending(t 
 		t.Fatalf("executeServiceUpdate() error = %v", err)
 	}
 	if finishedLaunch {
-		t.Fatal("failed helper launch was recorded as pending")
+		t.Fatal("failed fixed updater launch was recorded as pending")
+	}
+	if _, statErr := os.Stat(installerPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("staged installer remains after launch failure: %v", statErr)
 	}
 }
 
 func TestExecuteServiceUpdateDoesNotLaunchAfterGenerationAuthorizationFails(t *testing.T) {
 	generationErr := errors.New("configuration changed")
 	stagingDir := t.TempDir()
-	candidate := update.Candidate{Manifest: update.Manifest{Version: "0.2.0"}}
-	checker := &fakeServiceUpdateChecker{
-		candidate: candidate,
-		staged:    update.StagedUpdate{Version: "0.2.0", InstallerPath: filepath.Join(stagingDir, "setup.exe")},
+	installerPath := filepath.Join(stagingDir, "setup.exe")
+	if err := os.WriteFile(installerPath, []byte("installer"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	launched := false
+	client := &fakeServiceUpdateClient{result: update.CheckResult{Available: true, Version: "0.4.11", URL: "https://it.example/setup.exe", InstallerPath: installerPath}}
 	runtime := serviceUpdateRuntime{
-		checker:        checker,
-		executablePath: filepath.Join(t.TempDir(), "AceAgent.exe"),
-		stagingDir:     stagingDir,
-		launch: func(context.Context, update.LaunchOptions) error {
-			launched = true
-			return nil
-		},
-		authorize: func() (func(controller.UpdateStatus, bool), error) { return nil, generationErr },
+		client:       client,
+		checkOptions: update.CheckOptions{Origin: "https://it.example", CurrentVersion: "0.4.10", CurrentOS: "10.0.19045", StagingDir: stagingDir},
+		backupPath:   filepath.Join(stagingDir, "AceAgent.lkg.exe"),
+		authorize:    func() (func(controller.UpdateStatus, bool), error) { return nil, generationErr },
 	}
 
 	_, err := executeServiceUpdate(context.Background(), runtime)
@@ -442,7 +359,10 @@ func TestExecuteServiceUpdateDoesNotLaunchAfterGenerationAuthorizationFails(t *t
 	if !errors.Is(err, generationErr) {
 		t.Fatalf("executeServiceUpdate() error = %v", err)
 	}
-	if launched {
-		t.Fatal("helper launched after generation authorization failed")
+	if client.applyOptions != (update.ApplyOptions{}) {
+		t.Fatal("fixed updater launched after generation authorization failed")
+	}
+	if _, statErr := os.Stat(installerPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("staged installer remains after authorization failure: %v", statErr)
 	}
 }

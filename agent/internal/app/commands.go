@@ -6,12 +6,11 @@ import "fmt"
 type Mode string
 
 const (
-	ModeForeground   Mode = "foreground"
-	ModeService      Mode = "service"
-	ModeTray         Mode = "tray"
-	ModeDiagnose     Mode = "diagnose"
-	ModeVersion      Mode = "version"
-	ModeUpdateHelper Mode = "update-helper"
+	ModeForeground Mode = "foreground"
+	ModeService    Mode = "service"
+	ModeTray       Mode = "tray"
+	ModeDiagnose   Mode = "diagnose"
+	ModeVersion    Mode = "version"
 )
 
 func ParseMode(goos string, args []string) (Mode, []string, error) {

@@ -28,9 +28,7 @@ func main() {
 		UpdatePublicKey: buildinfo.UpdatePublicKey,
 		Version:         buildinfo.Version,
 	})
-	if exitCode != 0 {
-		logger.Error("updater command failed", "command", safeCommandName(os.Args[1:]))
-	}
+	logUpdaterResult(logger, os.Args[1:], exitCode)
 	os.Exit(exitCode)
 }
 
@@ -51,4 +49,16 @@ func safeCommandName(args []string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func logUpdaterResult(logger *slog.Logger, args []string, exitCode int) {
+	if logger == nil {
+		return
+	}
+	command := safeCommandName(args)
+	if exitCode == 0 {
+		logger.Info("updater command completed", "command", command)
+		return
+	}
+	logger.Error("updater command failed", "command", command)
 }
